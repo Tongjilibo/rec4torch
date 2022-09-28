@@ -1,0 +1,13 @@
+__pycache__
+*.pt
+*.onnx
+*.csv
+*.json
+*.log
+.idea
+.vscode/launch.json
+.pypirc
+rec4torch.egg-info/
+build/
+dist/
+.DS_Store
