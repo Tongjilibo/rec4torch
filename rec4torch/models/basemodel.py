@@ -8,7 +8,7 @@ from inspect import isfunction
 from ..inputs import build_input_features, SparseFeat, DenseFeat, VarLenSparseFeat, get_varlen_pooling_list, \
     create_embedding_matrix, varlen_embedding_lookup
 from ..snippets import metric_mapping, ProgbarLogger, EarlyStopping
-from .basemodel import PredictionLayer
+from ..layers import PredictionLayer
 
 
 class BaseModel(nn.Module):
@@ -293,14 +293,14 @@ class Linear(nn.Module):
 
     def forward(self, X, sparse_feat_refine_weight=None):
         # 离散变量过[embedding_size, 1]的embedding, [(btz,1,1), (btz,1,1), ...]
-        sparse_embedding_list = [self.embedding_dict[feat.embedding_name](X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1].long()])
+        sparse_embedding_list = [self.embedding_dict[feat.embedding_name](X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]].long())
                                  for feat in self.sparse_feature_columns]
         # 连续变量直接取值 [(btz, dense_len), (btz, dense_len)]
         dense_value_list = [X[:, self.feature_index[self.feature_index[feat.name][0]:self.feature_index[feat.name][1]]] for feat in self.dense_feature_columns]
 
-        # 变长离散变量过embdding: [(btz,1,1), (btz,1,1), ...]
-        sequence_embed_dict = varlen_embedding_lookup(X, self.embedding_dict, self.feature_index, self.varlen_sparse_feature_columns)  # {feat_name: (btz, seq_len, 1)}
-        varlen_embedding_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index, self.varlen_sparse_feature_columns, self.device)
+        # 变长离散变量过embdding: {feat_name: (btz, seq_len, 1)}, [(btz,1,1), (btz,1,1), ...]
+        sequence_embed_dict = varlen_embedding_lookup(X, self.embedding_dict, self.feature_index, self.varlen_sparse_feature_columns)
+        varlen_embedding_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index, self.varlen_sparse_feature_columns)
 
         sparse_embedding_list += varlen_embedding_list
 
@@ -340,9 +340,6 @@ class RecBase(BaseModel):
 
         self.out = PredictionLayer(task, )
 
-    def forward(self):
-        raise NotImplemented
-
     def input_from_feature_columns(self, X, feature_columns, embedding_dict, support_dense=True):
 
         sparse_feature_columns = list(filter(lambda x: isinstance(x, SparseFeat), feature_columns)) if len(feature_columns) else []
@@ -359,7 +356,7 @@ class RecBase(BaseModel):
         sequence_embed_dict = varlen_embedding_lookup(X, self.embedding_dict, self.feature_index,
                                                       varlen_sparse_feature_columns)
         varlen_sparse_embedding_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index,
-                                                               varlen_sparse_feature_columns, self.device)
+                                                               varlen_sparse_feature_columns)
 
         dense_value_list = [X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]] for feat in
                             dense_feature_columns]
@@ -367,14 +364,10 @@ class RecBase(BaseModel):
         return sparse_embedding_list + varlen_sparse_embedding_list, dense_value_list
 
     def compute_input_dim(self, feature_columns, include_sparse=True, include_dense=True, feature_group=False):
-        sparse_feature_columns = list(
-            filter(lambda x: isinstance(x, (SparseFeat, VarLenSparseFeat)), feature_columns)) if len(
-            feature_columns) else []
-        dense_feature_columns = list(
-            filter(lambda x: isinstance(x, DenseFeat), feature_columns)) if len(feature_columns) else []
+        sparse_feature_columns = list(filter(lambda x: isinstance(x, (SparseFeat, VarLenSparseFeat)), feature_columns)) if len(feature_columns) else []
+        dense_feature_columns = list(filter(lambda x: isinstance(x, DenseFeat), feature_columns)) if len(feature_columns) else []
 
-        dense_input_dim = sum(
-            map(lambda x: x.dimension, dense_feature_columns))
+        dense_input_dim = sum(map(lambda x: x.dimension, dense_feature_columns))
         if feature_group:
             sparse_input_dim = len(sparse_feature_columns)
         else:
@@ -420,9 +413,7 @@ class RecBase(BaseModel):
     @property
     def embedding_size(self, ):
         feature_columns = self.dnn_feature_columns
-        sparse_feature_columns = list(
-            filter(lambda x: isinstance(x, (SparseFeat, VarLenSparseFeat)), feature_columns)) if len(
-            feature_columns) else []
+        sparse_feature_columns = list(filter(lambda x: isinstance(x, (SparseFeat, VarLenSparseFeat)), feature_columns)) if len(feature_columns) else []
         embedding_size_set = set([feat.embedding_dim for feat in sparse_feature_columns])
         if len(embedding_size_set) > 1:
             raise ValueError("embedding_dim of SparseFeat and VarlenSparseFeat must be same in this model!")

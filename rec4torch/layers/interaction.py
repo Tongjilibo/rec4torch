@@ -7,7 +7,7 @@ class FM(nn.Module):
     output: [btz, 1]
     """
     def __init__(self):
-        super(FM).__init__()
+        super(FM, self).__init__()
     
     def forward(self, inputs):
         # inputs: [btz, field_size, emb_size]

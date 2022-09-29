@@ -2,19 +2,26 @@ from collections import namedtuple, OrderedDict
 import torch
 from torch import nn
 from .layers import SequencePoolingLayer
+import numpy as np
+import pandas as pd
 
 DEFAULT_GROUP_NAME = "default_group"
 
-class SparseFeat(namedtuple('SparseFeat', ['name', 'vocabulary_size', 'embedding_dim', 'dtype', 'embedding_name', 'group_name'])):
+class SparseFeat(namedtuple('SparseFeat', ['name', 'vocabulary_size', 'embedding_dim', 'use_hash', 'dtype', 'embedding_name', 'group_name'])):
     """离散特征
     """
-    def __new__(cls, name, vocabulary_size, embedding_dim=4, dtype="int32", embedding_name=None,
+    def __new__(cls, name, vocabulary_size, embedding_dim=4, use_hash=False, dtype="int32", embedding_name=None,
             group_name=DEFAULT_GROUP_NAME):
         if embedding_name is None:
             embedding_name = name
         if embedding_dim == "auto":
             embedding_dim = 6 * int(pow(vocabulary_size, 0.25))
-        return super(SparseFeat, cls).__new__(cls, name, vocabulary_size, embedding_dim, dtype, embedding_name, group_name)
+        if use_hash:
+            print("[WARNING] Feature Hashing on the fly currently is not supported in torch version")
+        return super(SparseFeat, cls).__new__(cls, name, vocabulary_size, embedding_dim, use_hash, dtype, embedding_name, group_name)
+    
+    def __hash__(self):
+        return self.name.__hash__()
 
 
 class VarLenSparseFeat(namedtuple('VarLenSparseFeat', ['sparsefeat', 'maxlen', 'pooling', 'length_name'])):
@@ -94,6 +101,32 @@ def build_input_features(feature_columns):
             raise TypeError("Invalid feature column type,got", type(feat))
     return features
 
+
+def build_input_tensor(inputs, feature_columns, target=None):
+    """根据特征的顺序组装成tensor
+    """
+    train_y = None
+    if isinstance(inputs, pd.DataFrame):
+        if target:
+            train_y = torch.from_numpy(inputs[target].values)
+        inputs = {col: np.array(values) for col, values in inputs.to_dict(orient='list').items()}
+        
+
+    feature_index = build_input_features(feature_columns)
+    train_X = [inputs[feature] for feature in feature_index]
+    for i in range(len(train_X)):
+        if len(train_X[i].shape) == 1:
+            train_X[i] = np.expand_dims(train_X[i], axis=1)
+    train_X = torch.from_numpy(np.concatenate(train_X, axis=-1))
+    
+    if train_y is not None:
+        return train_X, train_y
+    elif target:
+        train_y = torch.from_numpy(inputs[target])
+        return train_X, train_y
+    else:
+        return train_X
+    
 
 def combined_dnn_input(sparse_embedding_list, dense_value_list):
     """合并sparse和dense
