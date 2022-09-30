@@ -285,7 +285,7 @@ class Linear(nn.Module):
     feature_columns: 
     feature_index:
     """
-    def __init__(self, feature_columns, feature_index, init_std=0.0001, device='cpu'):
+    def __init__(self, feature_columns, feature_index, init_std=1e-4, device='cpu'):
         super(Linear, self).__init__()
         self.feature_index = feature_index
         self.device = device
@@ -328,7 +328,7 @@ class Linear(nn.Module):
 
 class RecBase(BaseModel):
     def __init__(self, linear_feature_columns, dnn_feature_columns, l2_reg_linear=1e-5, l2_reg_embedding=1e-5,
-                 init_std=0.0001, task='binary'):
+                 init_std=1e-4, task='binary'):
         super(RecBase, self).__init__()
         self.dnn_feature_columns = dnn_feature_columns
         self.aux_loss = torch.zeros((1,))  # 目前只看到dien里面使用

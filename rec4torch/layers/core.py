@@ -7,7 +7,7 @@ from .activations import activation_layer
 class DNN(nn.Module):
     '''MLP的全连接层
     '''
-    def __init__(self, input_dim, hidden_units, activation='relu', dropout_rate=0, use_bn=False, init_std=0.0001, dice_dim=3):
+    def __init__(self, input_dim, hidden_units, activation='relu', dropout_rate=0, use_bn=False, init_std=1e-4, dice_dim=3):
         super(DNN, self).__init__()
         assert isinstance(hidden_units, (tuple, list)) and len(hidden_units) > 0, 'hidden_unit support non_empty list/tuple inputs'
         self.dropout = nn.Dropout(dropout_rate)

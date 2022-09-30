@@ -143,7 +143,7 @@ def combined_dnn_input(sparse_embedding_list, dense_value_list):
         raise NotImplementedError
 
 
-def create_embedding_matrix(feature_columns, init_std=0.0001, linear=False, sparse=False, device='cpu'):
+def create_embedding_matrix(feature_columns, init_std=1e-4, linear=False, sparse=False, device='cpu'):
     """为Sparse, VarLenSparse进行embedding
        返回{embedding_name: nn.EmbeddingBag}
     """
