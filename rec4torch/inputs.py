@@ -102,13 +102,13 @@ def build_input_features(feature_columns):
     return features
 
 
-def build_input_tensor(inputs, feature_columns, target=None):
+def build_input_array(inputs, feature_columns, target=None):
     """根据特征的顺序组装成tensor
     """
     train_y = None
     if isinstance(inputs, pd.DataFrame):
         if target:
-            train_y = torch.from_numpy(inputs[target].values)
+            train_y = inputs[target].values
         inputs = {col: np.array(values) for col, values in inputs.to_dict(orient='list').items()}
         
 
@@ -117,12 +117,12 @@ def build_input_tensor(inputs, feature_columns, target=None):
     for i in range(len(train_X)):
         if len(train_X[i].shape) == 1:
             train_X[i] = np.expand_dims(train_X[i], axis=1)
-    train_X = torch.from_numpy(np.concatenate(train_X, axis=-1))
+    train_X = np.concatenate(train_X, axis=-1)
     
     if train_y is not None:
         return train_X, train_y
     elif target:
-        train_y = torch.from_numpy(inputs[target])
+        train_y = inputs[target]
         return train_X, train_y
     else:
         return train_X
@@ -133,9 +133,9 @@ def combined_dnn_input(sparse_embedding_list, dense_value_list):
     """
     res = []
     if len(sparse_embedding_list) > 0:
-        res.append(torch.flatten(torch.cat(sparse_embedding_list, dim=-1)))
+        res.append(torch.flatten(torch.cat(sparse_embedding_list, dim=-1), start_dim=1))
     if len(dense_value_list) > 0:
-        res.append(torch.flatten(torch.cat(dense_value_list, dim=-1)))
+        res.append(torch.flatten(torch.cat(dense_value_list, dim=-1), start_dim=1))
 
     if res:
         return torch.cat(res, dim=-1)
@@ -153,6 +153,10 @@ def create_embedding_matrix(feature_columns, init_std=0.0001, linear=False, spar
         {feat.embedding_name: nn.Embedding(feat.vocabulary_size, feat.embedding_dim if not linear else 1, sparse=sparse) 
         for feat in sparse_feature_columns+var_sparse_feature_columns}
     )
+    
+    for tensor in embedding_dict.values():
+        nn.init.normal_(tensor.weight, mean=0, std=init_std)
+
     return embedding_dict
 
 
@@ -184,7 +188,7 @@ def get_varlen_pooling_list(embedding_dict, features, feature_index, varlen_spar
     for feat in varlen_sparse_feature_columns:
         seq_emb = embedding_dict[feat.name]
         if feat.length_name is None:
-            seq_mask = features[:, feature_index[feat.name][0]:feature_index[feat.name][1]].long()
+            seq_mask = features[:, feature_index[feat.name][0]:feature_index[feat.name][1]].long() != 0
             emb = SequencePoolingLayer(mode=feat.pooling, support_masking=True)([seq_emb, seq_mask])
         else:
             seq_length = features[:, feature_index[feat.length_name][0]:feature_index[feat.length_name][1]].long()

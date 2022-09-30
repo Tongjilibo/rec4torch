@@ -108,6 +108,11 @@ class BaseModel(nn.Module):
             loss_detail = {f'loss{i}':v for i, v in enumerate(loss_detail[1:], start=1)}
         else:
             raise ValueError('Return loss only support Tensor/dict/tuple/list format')
+        
+        # l1正则和l2正则
+        reg_loss = self.get_regularization_loss()
+        loss = loss + reg_loss + self.aux_loss
+
         # 梯度累积
         loss = loss / grad_accumulation_steps if grad_accumulation_steps > 1 else loss
         return output, loss, loss_detail
@@ -290,6 +295,10 @@ class Linear(nn.Module):
         
         # 特征embdding字典，{feat_name: nn.Embedding()}
         self.embedding_dict = create_embedding_matrix(feature_columns, init_std, linear=True, sparse=False)
+        
+        if len(self.dense_feature_columns) > 0:
+            self.weight = nn.Parameter(torch.Tensor(sum(fc.dimension for fc in self.dense_feature_columns), 1))
+            nn.init.normal_(self.weight, mean=0, std=init_std)
 
     def forward(self, X, sparse_feat_refine_weight=None):
         # 离散变量过[embedding_size, 1]的embedding, [(btz,1,1), (btz,1,1), ...]
@@ -320,28 +329,28 @@ class Linear(nn.Module):
 class RecBase(BaseModel):
     def __init__(self, linear_feature_columns, dnn_feature_columns, l2_reg_linear=1e-5, l2_reg_embedding=1e-5,
                  init_std=0.0001, task='binary'):
-
         super(RecBase, self).__init__()
         self.dnn_feature_columns = dnn_feature_columns
+        self.aux_loss = torch.zeros((1,))  # 目前只看到dien里面使用
 
-        self.reg_loss = torch.zeros((1,))
-        self.aux_loss = torch.zeros((1,))
-
+        # feat_name到col_idx的映射, eg: {'age':(0,1),...}
         self.feature_index = build_input_features(linear_feature_columns + dnn_feature_columns)
-        self.dnn_feature_columns = dnn_feature_columns
 
+        # 为SparseFeat和VarLenSparseFeat特征创建embedding
         self.embedding_dict = create_embedding_matrix(dnn_feature_columns, init_std, sparse=False)
         self.linear_model = Linear(linear_feature_columns, self.feature_index)
 
+        # l1和l2正则
         self.regularization_weight = []
-
         self.add_regularization_weight(self.embedding_dict.parameters(), l2=l2_reg_embedding)
         self.add_regularization_weight(self.linear_model.parameters(), l2=l2_reg_linear)
 
+        # 输出层
         self.out = PredictionLayer(task, )
 
     def input_from_feature_columns(self, X, feature_columns, embedding_dict, support_dense=True):
-
+        """SparseFeat和VarLenSparseFeat生成Embedding，VarLenSparseFeat要过Pooling
+        """
         sparse_feature_columns = list(filter(lambda x: isinstance(x, SparseFeat), feature_columns)) if len(feature_columns) else []
         dense_feature_columns = list(filter(lambda x: isinstance(x, DenseFeat), feature_columns)) if len(feature_columns) else []
         varlen_sparse_feature_columns = list(filter(lambda x: isinstance(x, VarLenSparseFeat), feature_columns)) if feature_columns else []
@@ -350,16 +359,12 @@ class RecBase(BaseModel):
             raise ValueError("DenseFeat is not supported in dnn_feature_columns")
 
         sparse_embedding_list = [embedding_dict[feat.embedding_name](
-            X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]].long()) for
-            feat in sparse_feature_columns]
+            X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]].long()) for feat in sparse_feature_columns]
 
-        sequence_embed_dict = varlen_embedding_lookup(X, self.embedding_dict, self.feature_index,
-                                                      varlen_sparse_feature_columns)
-        varlen_sparse_embedding_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index,
-                                                               varlen_sparse_feature_columns)
+        sequence_embed_dict = varlen_embedding_lookup(X, self.embedding_dict, self.feature_index, varlen_sparse_feature_columns)
+        varlen_sparse_embedding_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index, varlen_sparse_feature_columns)
 
-        dense_value_list = [X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]] for feat in
-                            dense_feature_columns]
+        dense_value_list = [X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]] for feat in dense_feature_columns]
 
         return sparse_embedding_list + varlen_sparse_embedding_list, dense_value_list
 
@@ -380,6 +385,8 @@ class RecBase(BaseModel):
         return input_dim
 
     def add_regularization_weight(self, weight_list, l1=0.0, l2=0.0):
+        """记录需要正则的参数项
+        """
         # For a Parameter, put it in a list to keep Compatible with get_regularization_loss()
         if isinstance(weight_list, torch.nn.parameter.Parameter):
             weight_list = [weight_list]
@@ -389,8 +396,10 @@ class RecBase(BaseModel):
             weight_list = list(weight_list)
         self.regularization_weight.append((weight_list, l1, l2))
 
-    def get_regularization_loss(self, ):
-        total_reg_loss = torch.zeros((1,), device=self.device)
+    def get_regularization_loss(self):
+        """计算正则损失
+        """
+        total_reg_loss = torch.zeros((1,))
         for weight_list, l1, l2 in self.regularization_weight:
             for w in weight_list:
                 if isinstance(w, tuple):

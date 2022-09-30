@@ -8,6 +8,8 @@ import collections
 import inspect
 from datetime import datetime
 import warnings
+import os
+import random
 
 
 def sequence_padding(inputs, length=None, value=0, seq_dims=1, mode='post'):
@@ -477,3 +479,21 @@ def metric_mapping(metric, func, y_pred, y_true):
             return torch.mean(torch.square(first_log - second_log)).item()
 
     return None
+
+
+def seed_everything(seed=None):
+    '''固定seed
+    '''
+    max_seed_value = np.iinfo(np.uint32).max
+    min_seed_value = np.iinfo(np.uint32).min
+
+    if (seed is None) or not (min_seed_value <= seed <= max_seed_value):
+        seed = random.randint(np.iinfo(np.uint32).min, np.iinfo(np.uint32).max)
+    print(f"Global seed set to {seed}")
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    return seed

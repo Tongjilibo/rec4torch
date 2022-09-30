@@ -4,13 +4,13 @@ from torch import nn, optim
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import LabelEncoder
-from rec4torch.inputs import SparseFeat, VarLenSparseFeat, build_input_tensor
+from rec4torch.inputs import SparseFeat, VarLenSparseFeat, build_input_array
 from rec4torch.models import DeepFM
-from rec4torch.snippets import sequence_padding
+from rec4torch.snippets import sequence_padding, seed_everything
 
-batch_size = 16
+batch_size = 256
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
+seed_everything(1024)
 
 def get_data():
     def split(x):
@@ -45,7 +45,9 @@ def get_data():
     linear_feature_columns = fixlen_feature_columns + varlen_feature_columns
     dnn_feature_columns = fixlen_feature_columns + varlen_feature_columns
     
-    train_X, train_y = build_input_tensor(data, linear_feature_columns+dnn_feature_columns, target=['rating'])
+    train_X, train_y = build_input_array(data, linear_feature_columns+dnn_feature_columns, target=['rating'])
+    train_X = torch.from_numpy(train_X)
+    train_y = torch.tensor(train_y, dtype=torch.float)
     return train_X, train_y, linear_feature_columns, dnn_feature_columns
 
 # 加载数据集
@@ -56,11 +58,9 @@ train_dataloader = DataLoader(TensorDataset(train_X, train_y), batch_size=batch_
 model = DeepFM(linear_feature_columns, dnn_feature_columns, task='regression')
 
 model.compile(
-    loss=nn.CrossEntropyLoss(),
-    optimizer=optim.Adam(model.parameters(), lr=2e-5),
-    metrics=['accuracy']
+    loss=nn.MSELoss(),
+    optimizer=optim.Adam(model.parameters()),
 )
-
 
 if __name__ == "__main__":
     model.fit(train_dataloader, epochs=10, steps_per_epoch=None, callbacks=[])

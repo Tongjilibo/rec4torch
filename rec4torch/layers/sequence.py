@@ -26,14 +26,15 @@ class SequencePoolingLayer(nn.Module):
             mask = torch.transpose(mask, 1, 2)  # [btz, seq_len, 1]
         
         mask = torch.repeat_interleave(mask, seq_input.shape[-1], dim=2)  # [btz, seq_len, hdsz]
+        mask = (1 - mask).bool()
         
         if self.mode == 'max':
-            seq_input = torch.masked_fill(seq_input, 1-mask, 1e-8)
+            seq_input = torch.masked_fill(seq_input, mask, 1e-8)
             return torch.max(seq_input, dim=1, keepdim=True)  # [btz, 1, hdsz]
         elif self.mode == 'sum':
-            seq_input = torch.masked_fill(seq_input, 1-mask, 0)
+            seq_input = torch.masked_fill(seq_input, mask, 0)
             return torch.sum(seq_input, dim=1, keepdim=True)  # [btz, 1, hdsz]
         elif self.mode == 'mean':
-            seq_input = torch.masked_fill(seq_input, 1-mask, 0)
+            seq_input = torch.masked_fill(seq_input, mask, 0)
             seq_sum = torch.sum(seq_input, dim=1, keepdim=True)
-            return seq_sum / (user_behavior_len + 1e-8)
+            return seq_sum / (user_behavior_len.unsqueeze(-1) + 1e-8)

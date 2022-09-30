@@ -41,7 +41,7 @@ class PredictionLayer(nn.Module):
         
     def forward(self, X):
         output =  X
-        if hasattr('bias'):
+        if hasattr(self, 'bias'):
             output += self.bias
         if self.task == 'binary':
             output = torch.sigmoid(output)
