@@ -1,9 +1,10 @@
-from collections import namedtuple, OrderedDict
+from collections import namedtuple, OrderedDict, defaultdict
 import torch
 from torch import nn
-from .layers import SequencePoolingLayer
+from rec4torch.layers import SequencePoolingLayer
 import numpy as np
 import pandas as pd
+from itertools import chain
 
 DEFAULT_GROUP_NAME = "default_group"
 
@@ -160,10 +161,28 @@ def create_embedding_matrix(feature_columns, init_std=1e-4, linear=False, sparse
     return embedding_dict
 
 
+def embedding_lookup(X, embedding_dict, feature_index, sparse_feature_columns, return_feat_list={}, to_list=False):
+    """离散特征经embedding并返回
+    embedding_dict: 特征对应的embedding
+    feature_index:  特征对应的col区间
+    """
+    group_embedding_dict = defaultdict(list)
+    for fc in sparse_feature_columns:
+        feature_name = fc.name
+        embedding_name = fc.embedding_name
+        if (len(return_feat_list) == 0 or feature_name in return_feat_list):
+            lookup_idx = np.array(embedding_dict[feature_name])
+            emb = embedding_dict[embedding_name](X[:, lookup_idx[0]:lookup_idx[1]].long())
+            group_embedding_dict[fc.group_name].append(emb)
+    if to_list:
+        return list(chain.from_iterable(group_embedding_dict.values()))
+    return group_embedding_dict
+
+
 def varlen_embedding_lookup(X, embedding_dict, feature_index, varlen_sparse_feature_columns):
     """变长离散特征经embedding并返回
     embedding_dict: 特征对应的embedding
-    feature_index：特征对应的col区间
+    feature_index:  特征对应的col区间
     """
     varlen_embedding_vec_dict = {}
     for fc in varlen_sparse_feature_columns:

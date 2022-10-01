@@ -1,17 +1,16 @@
 import torch
 from torch import nn
-import numpy as np
-from tqdm import tqdm
-import time
 from collections import OrderedDict
 from inspect import isfunction
-from ..inputs import build_input_features, SparseFeat, DenseFeat, VarLenSparseFeat, get_varlen_pooling_list, \
-    create_embedding_matrix, varlen_embedding_lookup
-from ..snippets import metric_mapping, ProgbarLogger, EarlyStopping
-from ..layers import PredictionLayer
+from rec4torch.inputs import build_input_features, SparseFeat, DenseFeat, VarLenSparseFeat, get_varlen_pooling_list
+from rec4torch.inputs import combined_dnn_input, create_embedding_matrix, varlen_embedding_lookup
+from rec4torch.layers import FM, DNN, PredictionLayer, AttentionSequencePoolingLayer
+from rec4torch.snippets import metric_mapping, ProgbarLogger, EarlyStopping
 
 
 class BaseModel(nn.Module):
+    """Trainer
+    """
     def __init__(self):
         super(BaseModel, self).__init__()
         # 这里主要是为了外面调用用到
@@ -34,7 +33,7 @@ class BaseModel(nn.Module):
         self.resume_epoch = step_params['resume_epoch']
         return step_params
 
-    def compile(self, loss, optimizer, scheduler=None, clip_grad_norm=None, use_amp=False, metrics=None, adversarial_train={'name': ''}):
+    def compile(self, loss, optimizer, scheduler=None, clip_grad_norm=None, use_amp=False, metrics=None):
         '''定义loss, optimizer, metrics, 是否在计算loss前reshape
         loss: loss
         optimizer: 优化器
@@ -49,7 +48,6 @@ class BaseModel(nn.Module):
         self.clip_grad_norm = clip_grad_norm
         self.use_amp = use_amp
         if use_amp:
-            assert adversarial_train['name'] not in {'vat', 'gradient_penalty'}, 'Amp and adversarial_train both run is not supported in current version'
             from torch.cuda.amp import autocast
             self.autocast = autocast
             self.scaler = torch.cuda.amp.GradScaler()
@@ -313,7 +311,7 @@ class Linear(nn.Module):
 
         sparse_embedding_list += varlen_embedding_list
 
-        linear_logit = torch.zeros([X.shape[0], 1])
+        linear_logit = torch.zeros([X.shape[0], 1], device=X.device)
         if len(sparse_embedding_list) > 0:
             sparse_embedding_cat = torch.cat(sparse_embedding_list, dim=-1)  # [btz, 1, feat_cnt]
             if sparse_feat_refine_weight is not None:  # 加权
@@ -326,12 +324,13 @@ class Linear(nn.Module):
         
         return linear_logit
 
+
 class RecBase(BaseModel):
     def __init__(self, linear_feature_columns, dnn_feature_columns, l2_reg_linear=1e-5, l2_reg_embedding=1e-5,
                  init_std=1e-4, task='binary'):
         super(RecBase, self).__init__()
         self.dnn_feature_columns = dnn_feature_columns
-        self.aux_loss = torch.zeros((1,))  # 目前只看到dien里面使用
+        self.aux_loss = 0  # 目前只看到dien里面使用
 
         # feat_name到col_idx的映射, eg: {'age':(0,1),...}
         self.feature_index = build_input_features(linear_feature_columns + dnn_feature_columns)
@@ -358,12 +357,15 @@ class RecBase(BaseModel):
         if not support_dense and len(dense_feature_columns) > 0:
             raise ValueError("DenseFeat is not supported in dnn_feature_columns")
 
+        # 离散特征过embedding
         sparse_embedding_list = [embedding_dict[feat.embedding_name](
             X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]].long()) for feat in sparse_feature_columns]
 
+        # 序列离散特征过embedding+pooling
         sequence_embed_dict = varlen_embedding_lookup(X, self.embedding_dict, self.feature_index, varlen_sparse_feature_columns)
         varlen_sparse_embedding_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index, varlen_sparse_feature_columns)
-
+        
+        # 连续特征直接保留
         dense_value_list = [X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]] for feat in dense_feature_columns]
 
         return sparse_embedding_list + varlen_sparse_embedding_list, dense_value_list
@@ -399,7 +401,7 @@ class RecBase(BaseModel):
     def get_regularization_loss(self):
         """计算正则损失
         """
-        total_reg_loss = torch.zeros((1,))
+        total_reg_loss = 0
         for weight_list, l1, l2 in self.regularization_weight:
             for w in weight_list:
                 if isinstance(w, tuple):
@@ -427,3 +429,118 @@ class RecBase(BaseModel):
         if len(embedding_size_set) > 1:
             raise ValueError("embedding_dim of SparseFeat and VarlenSparseFeat must be same in this model!")
         return list(embedding_size_set)[0]
+
+
+class DeepFM(RecBase):
+    """DeepFM的实现
+    Reference: [1] Guo H, Tang R, Ye Y, et al. Deepfm: a factorization-machine based neural network for ctr prediction[J]. arXiv preprint arXiv:1703.04247, 2017.(https://arxiv.org/abs/1703.04247)
+    """
+    def __init__(self, linear_feature_columns, dnn_feature_columns, use_fm=True, dnn_hidden_units=(256, 128),
+                 l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4,
+                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary'):
+
+        super(DeepFM, self).__init__(linear_feature_columns, dnn_feature_columns, l2_reg_linear=l2_reg_linear,
+                                     l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
+
+        self.use_fm = use_fm
+        self.use_dnn = len(dnn_feature_columns) > 0 and len(dnn_hidden_units) > 0
+        if use_fm:
+            self.fm = FM()
+
+        if self.use_dnn:
+            self.dnn = DNN(self.compute_input_dim(dnn_feature_columns), dnn_hidden_units, activation=dnn_activation, 
+                           dropout_rate=dnn_dropout, use_bn=dnn_use_bn, init_std=init_std)
+            self.dnn_linear = nn.Linear(dnn_hidden_units[-1], 1, bias=False)
+            self.add_regularization_weight(filter(lambda x: 'weight' in x[0] and 'bn' not in x[0], self.dnn.named_parameters()), l2=l2_reg_dnn)
+            self.add_regularization_weight(self.dnn_linear.weight, l2=l2_reg_dnn)
+
+    def forward(self, X):
+        # 离散变量过embedding，连续变量保留原值
+        sparse_embedding_list, dense_value_list = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
+        logit = self.linear_model(X)  # [btz, 1]
+
+        if self.use_fm and len(sparse_embedding_list) > 0:
+            fm_input = torch.cat(sparse_embedding_list, dim=1)  # [btz, feat_cnt, emb_size]
+            # FM仅对离散特征进行交叉
+            logit += self.fm(fm_input)  # [btz, 1]
+
+        if self.use_dnn:
+            dnn_input = combined_dnn_input(sparse_embedding_list, dense_value_list)  # [btz, sparse_feat_cnt*emb_size+dense_feat_cnt]
+            dnn_output = self.dnn(dnn_input)
+            dnn_logit = self.dnn_linear(dnn_output)
+            logit += dnn_logit
+
+        y_pred = self.out(logit)
+
+        return y_pred
+
+
+class WideDeep(RecBase):
+    """WideDeep的实现
+    Reference: [1] Cheng H T, Koc L, Harmsen J, et al. Wide & deep learning for recommender systems[C]//Proceedings of the 1st Workshop on Deep Learning for Recommender Systems. ACM, 2016: 7-10.(https://arxiv.org/pdf/1606.07792.pdf)
+    """
+    def __init__(self, linear_feature_columns, dnn_feature_columns, dnn_hidden_units=(256, 128),
+                 l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4, 
+                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary'):
+        super(WideDeep, self).__init__(linear_feature_columns, dnn_feature_columns, l2_reg_linear=l2_reg_linear,
+                                     l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
+
+        if len(dnn_feature_columns) > 0 and len(dnn_hidden_units) > 0:
+            self.dnn = DNN(self.compute_input_dim(dnn_feature_columns), dnn_hidden_units, activation=dnn_activation, 
+                dropout_rate=dnn_dropout, use_bn=dnn_use_bn, init_std=init_std)
+            self.dnn_linear = nn.Linear(dnn_hidden_units[-1], 1, bias=False)
+            self.add_regularization_weight(filter(lambda x: 'weight' in x[0] and 'bn' not in x[0], self.dnn.named_parameters()), l2=l2_reg_dnn)
+            self.add_regularization_weight(self.dnn_linear.weight, l2=l2_reg_dnn)
+
+    def forward(self, X):
+        sparse_embedding_list, dense_value_list = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
+        logit = self.linear_model(X)  # [btz, 1]
+
+        if hasattr(self, 'dnn') and hasattr(self, 'dnn_linear'):
+            dnn_input = combined_dnn_input(sparse_embedding_list, dense_value_list)  # [btz, sparse_feat_cnt*emb_size+dense_feat_cnt]
+            dnn_output = self.dnn(dnn_input)
+            dnn_logit = self.dnn_linear(dnn_output)
+            logit += dnn_logit
+
+        y_pred = self.out(logit)
+
+        return y_pred
+
+
+class DIN(RecBase):
+    """Deep Interest Network实现
+    """
+    def __init__(self, dnn_feature_columns, history_feature_list, dnn_hidden_units=(256, 128),
+                 att_hidden_size=(64, 16), att_activation='Dice', att_weight_normalization=False,
+                 l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4,
+                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary'):
+        super(DIN, self).__init__([], dnn_feature_columns, l2_reg_linear=l2_reg_linear,
+                                  l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
+        self.sparse_feature_columns = list(filter(lambda x: isinstance(x, SparseFeat), dnn_feature_columns)) if len(dnn_feature_columns) else []
+        self.varlen_sparse_feature_columns = list(filter(lambda x: isinstance(x, VarLenSparseFeat), dnn_feature_columns)) if dnn_feature_columns else []
+        self.history_feature_list = history_feature_list
+
+        # Attn模块
+        att_emb_dim = self._compute_interest_dim()
+        self.attention = AttentionSequencePoolingLayer(att_hidden_units=att_hidden_size, embedding_dim=att_emb_dim, att_activation=att_activation,
+                                                       return_score=False, supports_masking=False, weight_normalization=att_weight_normalization)
+
+        # DNN模块
+        self.dnn = DNN(self.compute_input_dim(dnn_feature_columns), dnn_hidden_units, activation=dnn_activation, 
+                       dropout_rate=dnn_dropout, use_bn=dnn_use_bn, init_std=init_std)
+        self.dnn_linear = nn.Linear(dnn_hidden_units[-1], 1, bias=False)
+        self.add_regularization_weight(filter(lambda x: 'weight' in x[0] and 'bn' not in x[0], self.dnn.named_parameters()), l2=l2_reg_dnn)
+        self.add_regularization_weight(self.dnn_linear.weight, l2=l2_reg_dnn)
+
+
+    def forward(self, X):
+        # 离散变量过embedding，连续变量保留原值，这里无需离散变量
+        _, dense_value_list = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
+
+        
+    
+    def _compute_interest_dim(self):
+        """计算兴趣网络特征维度和
+        """
+        dim_list = [feat.embedding_dim for feat in self.sparse_feature_columns if feat.name in self.history_feature_list]
+        return sum(dim_list)
