@@ -109,7 +109,7 @@ class AttentionSequencePoolingLayer(nn.Module):
         self.weight_normalization = weight_normalization
 
         # 局部注意力单元
-        self.dnn = DNN(inputs_dim=4 * embedding_dim, hidden_units=att_hidden_units, activation=att_activation, 
+        self.dnn = DNN(input_dim=4 * embedding_dim, hidden_units=att_hidden_units, activation=att_activation, 
                        dice_dim=kwargs.get('dice_dim', 3), use_bn=kwargs.get('dice_dim', False), dropout_rate=kwargs.get('dropout_rate', 0))
         self.dense = nn.Linear(att_hidden_units[-1], 1)
 

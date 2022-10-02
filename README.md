@@ -13,15 +13,15 @@
 
 
 ## 2. 功能
-- 基于pytorch实现各类推荐算法
+- 基于pytorch实现各类推荐算法(DeepFM, WideDeep, DIN)
 
 
 ## 3. 快速上手
-- 参考了[deepctr-torch](https://github.com/shenweichen/DeepCTR-Torch)，目前改动不大
+- 参考了[deepctr-torch](https://github.com/shenweichen/DeepCTR-Torch)
 
 
 ## 4. 版本说明
 
 
 ## 5. 更新：
-- **2022年9月30更新**：初版提交
+- **2022年9月30更新**：初版提交, 训练过程修改为传入dataloader(参考bert4torch)，合并models和layers(模型结构较简单)，合并简化embedding_lookup，去掉一些重复的embedding过程(提速)

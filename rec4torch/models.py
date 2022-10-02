@@ -3,7 +3,7 @@ from torch import nn
 from collections import OrderedDict
 from inspect import isfunction
 from rec4torch.inputs import build_input_features, SparseFeat, DenseFeat, VarLenSparseFeat, get_varlen_pooling_list
-from rec4torch.inputs import combined_dnn_input, create_embedding_matrix, varlen_embedding_lookup
+from rec4torch.inputs import combined_dnn_input, create_embedding_matrix, embedding_lookup, maxlen_lookup
 from rec4torch.layers import FM, DNN, PredictionLayer, AttentionSequencePoolingLayer
 from rec4torch.snippets import metric_mapping, ProgbarLogger, EarlyStopping
 
@@ -306,7 +306,7 @@ class Linear(nn.Module):
         dense_value_list = [X[:, self.feature_index[self.feature_index[feat.name][0]:self.feature_index[feat.name][1]]] for feat in self.dense_feature_columns]
 
         # 变长离散变量过embdding: {feat_name: (btz, seq_len, 1)}, [(btz,1,1), (btz,1,1), ...]
-        sequence_embed_dict = varlen_embedding_lookup(X, self.embedding_dict, self.feature_index, self.varlen_sparse_feature_columns)
+        sequence_embed_dict = embedding_lookup(X, self.embedding_dict, self.feature_index, self.varlen_sparse_feature_columns)
         varlen_embedding_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index, self.varlen_sparse_feature_columns)
 
         sparse_embedding_list += varlen_embedding_list
@@ -362,7 +362,7 @@ class RecBase(BaseModel):
             X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]].long()) for feat in sparse_feature_columns]
 
         # 序列离散特征过embedding+pooling
-        sequence_embed_dict = varlen_embedding_lookup(X, self.embedding_dict, self.feature_index, varlen_sparse_feature_columns)
+        sequence_embed_dict = embedding_lookup(X, self.embedding_dict, self.feature_index, varlen_sparse_feature_columns)
         varlen_sparse_embedding_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index, varlen_sparse_feature_columns)
         
         # 连续特征直接保留
@@ -510,7 +510,7 @@ class WideDeep(RecBase):
 class DIN(RecBase):
     """Deep Interest Network实现
     """
-    def __init__(self, dnn_feature_columns, history_feature_list, dnn_hidden_units=(256, 128),
+    def __init__(self, dnn_feature_columns, candicate_history_list, dnn_hidden_units=(256, 128),
                  att_hidden_size=(64, 16), att_activation='Dice', att_weight_normalization=False,
                  l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4,
                  dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary'):
@@ -518,7 +518,18 @@ class DIN(RecBase):
                                   l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
         self.sparse_feature_columns = list(filter(lambda x: isinstance(x, SparseFeat), dnn_feature_columns)) if len(dnn_feature_columns) else []
         self.varlen_sparse_feature_columns = list(filter(lambda x: isinstance(x, VarLenSparseFeat), dnn_feature_columns)) if dnn_feature_columns else []
-        self.history_feature_list = history_feature_list
+        self.candicate_history_list = candicate_history_list
+
+        # 把varlen_sparse_feature_columns分解成hist和varlen特征
+        self.history_feature_names = list(map(lambda x: "hist_"+x, candicate_history_list))
+        self.history_feature_columns = []
+        self.sparse_varlen_feature_columns = []
+        for fc in self.varlen_sparse_feature_columns:
+            feature_name = fc.name
+            if feature_name in self.history_feature_names:
+                self.history_feature_columns.append(fc)
+            else:
+                self.sparse_varlen_feature_columns.append(fc)
 
         # Attn模块
         att_emb_dim = self._compute_interest_dim()
@@ -535,12 +546,43 @@ class DIN(RecBase):
 
     def forward(self, X):
         # 离散变量过embedding，连续变量保留原值，这里无需离散变量
-        _, dense_value_list = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
+        dense_feature_columns = list(filter(lambda x: isinstance(x, DenseFeat), self.dnn_feature_columns)) if len(self.dnn_feature_columns) else []
+        dense_value_list = [X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]] for feat in dense_feature_columns]
 
+        # 过embedding，这里改造embedding_lookup使得只经过一次embedding, 加快训练速度
+        # query_emb_list     [[btz, 1, emb_size], ...]
+        # keys_emb_list      [[btz, seq_len, emb_size], ...]
+        # dnn_input_emb_list [[btz, 1, emb_size], ...]
+        return_feat_list = [self.candicate_history_list, self.history_feature_names, [fc.name for fc in self.sparse_feature_columns]]
+        emb_lists = embedding_lookup(X, self.embedding_dict, self.feature_index, self.dnn_feature_columns, return_feat_list=return_feat_list)
+        query_emb_list, keys_emb_list, dnn_input_emb_list = emb_lists
+        
+        # 获取变长稀疏特征pooling的结果， [[btz, 1, emb_size]
+        sequence_embed_dict = embedding_lookup(X, self.embedding_dict, self.feature_index, self.sparse_varlen_feature_columns)
+        sequence_embed_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index, self.sparse_varlen_feature_columns)
+        
+        # Attn部分
+        query_emb = torch.cat(query_emb_list, dim=-1)  # [btz, 1, hdsz]
+        keys_emb = torch.cat(keys_emb_list, dim=-1)  # [btz, 1, hdsz]
+        keys_length = maxlen_lookup(X, self.feature_index, self.history_feature_names)  # [B, 1]
+        hist = self.attention(query_emb, keys_emb, keys_length)  # [btz, 1, hdsz]
+
+        # dnn部分
+        dnn_input_emb_list += sequence_embed_list
+        deep_input_emb = torch.cat(dnn_input_emb_list, dim=-1)  # [btz, 1, hdsz]
+        deep_input_emb = torch.cat([deep_input_emb, hist], dim=-1)  # [btz, 1, hdsz]
+        dnn_input = combined_dnn_input([deep_input_emb], dense_value_list)  # [btz, hdsz]
+        dnn_output = self.dnn(dnn_input)
+        dnn_logit = self.dnn_linear(dnn_output)
+
+        # 输出
+        y_pred = self.out(dnn_logit)
+
+        return y_pred
         
     
     def _compute_interest_dim(self):
         """计算兴趣网络特征维度和
         """
-        dim_list = [feat.embedding_dim for feat in self.sparse_feature_columns if feat.name in self.history_feature_list]
+        dim_list = [feat.embedding_dim for feat in self.sparse_feature_columns if feat.name in self.candicate_history_list]
         return sum(dim_list)

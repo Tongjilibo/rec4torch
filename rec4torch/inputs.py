@@ -161,41 +161,37 @@ def create_embedding_matrix(feature_columns, init_std=1e-4, linear=False, sparse
     return embedding_dict
 
 
-def embedding_lookup(X, embedding_dict, feature_index, sparse_feature_columns, return_feat_list={}, to_list=False):
-    """离散特征经embedding并返回
+def embedding_lookup(X, embedding_dict, feature_index, sparse_feature_columns, return_feat_list=[]):
+    """离散特征经embedding并返回, 去掉了
     embedding_dict: 特征对应的embedding
     feature_index:  特征对应的col区间
+    return_feat_list: 需要返回的特征list, 支持一层嵌套
     """
-    group_embedding_dict = defaultdict(list)
+
+    multi = False
+    if len(return_feat_list) == 0:
+        return_feat_list_flat = [fc.name for fc in sparse_feature_columns]
+    elif isinstance(return_feat_list[0], (list, tuple)):
+        # 嵌套一层
+        return_feat_list_flat = [j for i in return_feat_list for j in i]
+        multi = True
+    else:
+        return_feat_list_flat = return_feat_list
+
+    # 对满足筛选条件的过embedding
+    embedding_vec_dict = {}
     for fc in sparse_feature_columns:
         feature_name = fc.name
-        embedding_name = fc.embedding_name
-        if (len(return_feat_list) == 0 or feature_name in return_feat_list):
-            lookup_idx = np.array(embedding_dict[feature_name])
-            emb = embedding_dict[embedding_name](X[:, lookup_idx[0]:lookup_idx[1]].long())
-            group_embedding_dict[fc.group_name].append(emb)
-    if to_list:
-        return list(chain.from_iterable(group_embedding_dict.values()))
-    return group_embedding_dict
-
-
-def varlen_embedding_lookup(X, embedding_dict, feature_index, varlen_sparse_feature_columns):
-    """变长离散特征经embedding并返回
-    embedding_dict: 特征对应的embedding
-    feature_index:  特征对应的col区间
-    """
-    varlen_embedding_vec_dict = {}
-    for fc in varlen_sparse_feature_columns:
-        feature_name = fc.name
-        embedding_name = fc.embedding_name
-        if fc.use_hash:
-            lookup_idx = feature_index[feature_name]
-        else:
-            lookup_idx = feature_index[feature_name]
-        varlen_embedding_vec_dict[feature_name] = embedding_dict[embedding_name](
-            X[:, lookup_idx[0]:lookup_idx[1]].long())  # (lookup_idx)
-
-    return varlen_embedding_vec_dict
+        if feature_name in return_feat_list_flat:
+            lookup_idx = np.array(feature_index[feature_name])
+            emb = embedding_dict[fc.embedding_name](X[:, lookup_idx[0]:lookup_idx[1]].long())
+            embedding_vec_dict[feature_name] = emb
+    
+    # 嵌套多个
+    if multi:
+        return [[embedding_vec_dict[j] for j in i] for i in return_feat_list]
+    else:
+        return [embedding_vec_dict[i] for i in return_feat_list]
 
 
 def get_varlen_pooling_list(embedding_dict, features, feature_index, varlen_sparse_feature_columns):
@@ -215,3 +211,11 @@ def get_varlen_pooling_list(embedding_dict, features, feature_index, varlen_spar
             
         varlen_sparse_embedding_list.append(emb)
     return varlen_sparse_embedding_list
+
+
+def maxlen_lookup(X, feature_index, col_name, padding=0):
+    """计算序列长度
+    """
+    lookup_idx = np.array(feature_index[col_name[0]])
+    max_len = X[:, lookup_idx[0]:lookup_idx[1]].ne(padding)
+    return torch.sum(max_len.long(), dim=-1, keepdim=True)  # [btz, 1]
