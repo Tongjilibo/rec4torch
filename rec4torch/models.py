@@ -1,11 +1,12 @@
+from nntplib import NNTPProtocolError
 import torch
 from torch import nn
 from collections import OrderedDict
 from inspect import isfunction
 from rec4torch.inputs import build_input_features, SparseFeat, DenseFeat, VarLenSparseFeat, get_varlen_pooling_list
 from rec4torch.inputs import combined_dnn_input, create_embedding_matrix, embedding_lookup, maxlen_lookup
-from rec4torch.layers import FM, DNN, PredictionLayer, AttentionSequencePoolingLayer
-from rec4torch.snippets import metric_mapping, ProgbarLogger, EarlyStopping
+from rec4torch.layers import FM, DNN, PredictionLayer, AttentionSequencePoolingLayer, InterestExtractor, InterestEvolving
+from rec4torch.snippets import metric_mapping, ProgbarLogger, EarlyStopping, split_columns
 
 
 class BaseModel(nn.Module):
@@ -287,9 +288,7 @@ class Linear(nn.Module):
         super(Linear, self).__init__()
         self.feature_index = feature_index
         self.device = device
-        self.sparse_feature_columns = list(filter(lambda x: isinstance(x, SparseFeat), feature_columns)) if len(feature_columns) else []
-        self.dense_feature_columns = list(filter(lambda x: isinstance(x, DenseFeat), feature_columns)) if len(feature_columns) else []
-        self.varlen_sparse_feature_columns = list(filter(lambda x: isinstance(x, VarLenSparseFeat), feature_columns)) if len(feature_columns) else []
+        self.sparse_feature_columns, self.dense_feature_columns, self.varlen_sparse_feature_columns = split_columns(feature_columns)
         
         # 特征embdding字典，{feat_name: nn.Embedding()}
         self.embedding_dict = create_embedding_matrix(feature_columns, init_std, linear=True, sparse=False)
@@ -350,9 +349,7 @@ class RecBase(BaseModel):
     def input_from_feature_columns(self, X, feature_columns, embedding_dict, support_dense=True):
         """SparseFeat和VarLenSparseFeat生成Embedding，VarLenSparseFeat要过Pooling
         """
-        sparse_feature_columns = list(filter(lambda x: isinstance(x, SparseFeat), feature_columns)) if len(feature_columns) else []
-        dense_feature_columns = list(filter(lambda x: isinstance(x, DenseFeat), feature_columns)) if len(feature_columns) else []
-        varlen_sparse_feature_columns = list(filter(lambda x: isinstance(x, VarLenSparseFeat), feature_columns)) if feature_columns else []
+        sparse_feature_columns, dense_feature_columns, varlen_sparse_feature_columns = split_columns(feature_columns)
 
         if not support_dense and len(dense_feature_columns) > 0:
             raise ValueError("DenseFeat is not supported in dnn_feature_columns")
@@ -370,20 +367,24 @@ class RecBase(BaseModel):
 
         return sparse_embedding_list + varlen_sparse_embedding_list, dense_value_list
 
-    def compute_input_dim(self, feature_columns, include_sparse=True, include_dense=True, feature_group=False):
-        sparse_feature_columns = list(filter(lambda x: isinstance(x, (SparseFeat, VarLenSparseFeat)), feature_columns)) if len(feature_columns) else []
-        dense_feature_columns = list(filter(lambda x: isinstance(x, DenseFeat), feature_columns)) if len(feature_columns) else []
+    def compute_input_dim(self, feature_columns, feature_names=[('sparse', 'var_sparse', 'dense')], feature_group=False):
+        def get_dim(feat):
+            if isinstance(feat, DenseFeat):
+                return feat.dimension
+            elif feature_group:
+                return 1
+            else:
+                return feat.embedding_dim
 
-        dense_input_dim = sum(map(lambda x: x.dimension, dense_feature_columns))
-        if feature_group:
-            sparse_input_dim = len(sparse_feature_columns)
-        else:
-            sparse_input_dim = sum(feat.embedding_dim for feat in sparse_feature_columns)
+        feature_col_groups = split_columns(feature_columns, feature_names)
         input_dim = 0
-        if include_sparse:
-            input_dim += sparse_input_dim
-        if include_dense:
-            input_dim += dense_input_dim
+        for feature_col in feature_col_groups:
+            if isinstance(feature_col, list):
+                for feat in feature_col:
+                    input_dim += get_dim(feat)
+            else:
+                input_dim += get_dim(feature_col)
+                    
         return input_dim
 
     def add_regularization_weight(self, weight_list, l1=0.0, l2=0.0):
@@ -424,7 +425,7 @@ class RecBase(BaseModel):
     @property
     def embedding_size(self, ):
         feature_columns = self.dnn_feature_columns
-        sparse_feature_columns = list(filter(lambda x: isinstance(x, (SparseFeat, VarLenSparseFeat)), feature_columns)) if len(feature_columns) else []
+        sparse_feature_columns = split_columns(feature_columns, ['sparse', 'var_sparse'])
         embedding_size_set = set([feat.embedding_dim for feat in sparse_feature_columns])
         if len(embedding_size_set) > 1:
             raise ValueError("embedding_dim of SparseFeat and VarlenSparseFeat must be same in this model!")
@@ -510,30 +511,35 @@ class WideDeep(RecBase):
 class DIN(RecBase):
     """Deep Interest Network实现
     """
-    def __init__(self, dnn_feature_columns, candicate_history_list, dnn_hidden_units=(256, 128),
-                 att_hidden_size=(64, 16), att_activation='Dice', att_weight_normalization=False,
-                 l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4,
+    def __init__(self, dnn_feature_columns, item_history_list, dnn_hidden_units=(256, 128),
+                 att_hidden_units=(64, 16), att_activation='Dice', att_weight_normalization=False,
+                 l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4,
                  dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary'):
-        super(DIN, self).__init__([], dnn_feature_columns, l2_reg_linear=l2_reg_linear,
-                                  l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
-        self.sparse_feature_columns = list(filter(lambda x: isinstance(x, SparseFeat), dnn_feature_columns)) if len(dnn_feature_columns) else []
-        self.varlen_sparse_feature_columns = list(filter(lambda x: isinstance(x, VarLenSparseFeat), dnn_feature_columns)) if dnn_feature_columns else []
-        self.candicate_history_list = candicate_history_list
+        super(DIN, self).__init__([], dnn_feature_columns, l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
+        del self.linear_model  # 删除不必要的网络结构
+        
+        self.sparse_feature_columns, self.dense_feature_columns, self.varlen_sparse_feature_columns = split_columns(dnn_feature_columns)
+        self.item_history_list = item_history_list
 
-        # 把varlen_sparse_feature_columns分解成hist和varlen特征
-        self.history_feature_names = list(map(lambda x: "hist_"+x, candicate_history_list))
+        # 把varlen_sparse_feature_columns分解成hist、neg_hist和varlen特征
+        # 其实是DIEN的逻辑（为了避免多次执行），DIN中少了neg模块，DIEN是在deepctr是在forward中会重复执行多次
+        self.history_feature_names = list(map(lambda x: "hist_"+x, item_history_list))
+        self.neg_history_feature_names = list(map(lambda x: "neg_" + x, self.history_feature_names))
         self.history_feature_columns = []
+        self.neg_history_feature_columns = []
         self.sparse_varlen_feature_columns = []
         for fc in self.varlen_sparse_feature_columns:
             feature_name = fc.name
             if feature_name in self.history_feature_names:
                 self.history_feature_columns.append(fc)
+            elif feature_name in self.neg_history_feature_names:
+                self.neg_history_feature_columns.append(fc)
             else:
                 self.sparse_varlen_feature_columns.append(fc)
 
         # Attn模块
         att_emb_dim = self._compute_interest_dim()
-        self.attention = AttentionSequencePoolingLayer(att_hidden_units=att_hidden_size, embedding_dim=att_emb_dim, att_activation=att_activation,
+        self.attention = AttentionSequencePoolingLayer(att_hidden_units=att_hidden_units, embedding_dim=att_emb_dim, att_activation=att_activation,
                                                        return_score=False, supports_masking=False, weight_normalization=att_weight_normalization)
 
         # DNN模块
@@ -545,33 +551,21 @@ class DIN(RecBase):
 
 
     def forward(self, X):
-        # 离散变量过embedding，连续变量保留原值，这里无需离散变量
-        dense_feature_columns = list(filter(lambda x: isinstance(x, DenseFeat), self.dnn_feature_columns)) if len(self.dnn_feature_columns) else []
-        dense_value_list = [X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]] for feat in dense_feature_columns]
+        # 过embedding
+        emb_lists, query_emb, keys_emb, keys_length, deep_input_emb = self._get_emb(X)
 
-        # 过embedding，这里改造embedding_lookup使得只经过一次embedding, 加快训练速度
-        # query_emb_list     [[btz, 1, emb_size], ...]
-        # keys_emb_list      [[btz, seq_len, emb_size], ...]
-        # dnn_input_emb_list [[btz, 1, emb_size], ...]
-        return_feat_list = [self.candicate_history_list, self.history_feature_names, [fc.name for fc in self.sparse_feature_columns]]
-        emb_lists = embedding_lookup(X, self.embedding_dict, self.feature_index, self.dnn_feature_columns, return_feat_list=return_feat_list)
-        query_emb_list, keys_emb_list, dnn_input_emb_list = emb_lists
-        
         # 获取变长稀疏特征pooling的结果， [[btz, 1, emb_size]
         sequence_embed_dict = embedding_lookup(X, self.embedding_dict, self.feature_index, self.sparse_varlen_feature_columns)
         sequence_embed_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index, self.sparse_varlen_feature_columns)
         
         # Attn部分
-        query_emb = torch.cat(query_emb_list, dim=-1)  # [btz, 1, hdsz]
-        keys_emb = torch.cat(keys_emb_list, dim=-1)  # [btz, 1, hdsz]
-        keys_length = maxlen_lookup(X, self.feature_index, self.history_feature_names)  # [B, 1]
         hist = self.attention(query_emb, keys_emb, keys_length)  # [btz, 1, hdsz]
 
         # dnn部分
+        dnn_input_emb_list = emb_lists[2]
         dnn_input_emb_list += sequence_embed_list
-        deep_input_emb = torch.cat(dnn_input_emb_list, dim=-1)  # [btz, 1, hdsz]
         deep_input_emb = torch.cat([deep_input_emb, hist], dim=-1)  # [btz, 1, hdsz]
-        dnn_input = combined_dnn_input([deep_input_emb], dense_value_list)  # [btz, hdsz]
+        dnn_input = combined_dnn_input([deep_input_emb], emb_lists[-1])  # [btz, hdsz]
         dnn_output = self.dnn(dnn_input)
         dnn_logit = self.dnn_linear(dnn_output)
 
@@ -580,9 +574,76 @@ class DIN(RecBase):
 
         return y_pred
         
-    
+    def _get_emb(self, X):
+        # 过embedding，这里改造embedding_lookup使得只经过一次embedding, 加快训练速度
+        # query_emb_list     [[btz, 1, emb_size], ...]
+        # keys_emb_list      [[btz, seq_len, emb_size], ...]
+        # dnn_input_emb_list [[btz, 1, emb_size], ...]
+        return_feat_list = [self.item_history_list, self.history_feature_names, [fc.name for fc in self.sparse_feature_columns]]
+        emb_lists = embedding_lookup(X, self.embedding_dict, self.feature_index, self.dnn_feature_columns, return_feat_list=return_feat_list)
+        query_emb_list, keys_emb_list, dnn_input_emb_list = emb_lists
+        dense_value_list = [X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]] for feat in self.dense_feature_columns]
+        emb_lists.append(dense_value_list)
+
+        query_emb = torch.cat(query_emb_list, dim=-1)  # [btz, 1, hdsz]
+        keys_emb = torch.cat(keys_emb_list, dim=-1)  # [btz, 1, hdsz]
+        keys_length = maxlen_lookup(X, self.feature_index, self.history_feature_names)  # [btz, 1]
+        deep_input_emb = torch.cat(dnn_input_emb_list, dim=-1)  # [btz, 1, hdsz]
+        return emb_lists, query_emb, keys_emb, keys_length, deep_input_emb
+
     def _compute_interest_dim(self):
         """计算兴趣网络特征维度和
         """
-        dim_list = [feat.embedding_dim for feat in self.sparse_feature_columns if feat.name in self.candicate_history_list]
+        dim_list = [feat.embedding_dim for feat in self.sparse_feature_columns if feat.name in self.item_history_list]
         return sum(dim_list)
+
+
+class DIEN(DIN):
+    """Deep Interest Evolution Network
+    """
+    def __init__(self, dnn_feature_columns, item_history_list, gru_type="GRU", use_negsampling=False, alpha=1.0, 
+                 dnn_use_bn=False, dnn_hidden_units=(256, 128), dnn_activation='relu', att_hidden_units=(64, 16), att_activation="relu", 
+                 att_weight_normalization=True, l2_reg_embedding=1e-6, l2_reg_dnn=0, dnn_dropout=0, init_std=0.0001, task='binary'):
+        super(DIEN, self).__init__(dnn_feature_columns, item_history_list, dnn_hidden_units, att_hidden_units, att_activation, att_weight_normalization, 
+                                   l2_reg_embedding, l2_reg_dnn, init_std, dnn_dropout, dnn_activation, dnn_use_bn, task)
+        del self.attention
+        self.alpha = alpha
+
+        # 兴趣提取层
+        input_size = self._compute_interest_dim()
+        self.interest_extractor = InterestExtractor(input_size=input_size, use_neg=use_negsampling, init_std=init_std)
+
+        # 兴趣演变层
+        self.interest_evolution = InterestEvolving(input_size=input_size, gru_type=gru_type, use_neg=use_negsampling, init_std=init_std,
+                                                   att_hidden_size=att_hidden_units, att_activation=att_activation, att_weight_normalization=att_weight_normalization)
+        
+        # DNN
+        dnn_input_size = self.compute_input_dim(dnn_feature_columns, [('sparse', 'dense')]) + input_size
+        self.dnn = DNN(dnn_input_size, dnn_hidden_units, activation=dnn_activation, 
+                       dropout_rate=dnn_dropout, use_bn=dnn_use_bn, init_std=init_std)
+
+    def forward(self, X):
+        # 过embedding
+        emb_lists, query_emb, keys_emb, keys_length, deep_input_emb = self._get_emb(X)
+        neg_keys_emb_list = embedding_lookup(X, self.embedding_dict, self.feature_index, self.dnn_feature_columns, return_feat_list=self.neg_history_feature_names)
+        neg_keys_emb = torch.cat(neg_keys_emb_list, dim=-1)  # [btz, 1, hdsz]
+
+        # 过兴趣提取层
+        # input shape: [btz, seq_len, hdsz],  [btz, 1], [btz, seq_len, hdsz]
+        # masked_interest shape: [btz, seq_len, hdsz]
+        masked_interest, aux_loss = self.interest_extractor(keys_emb, keys_length, neg_keys_emb)
+        self.add_auxiliary_loss(aux_loss, self.alpha)
+
+        # 过兴趣演变层
+        hist = self.interest_evolution(query_emb, masked_interest, keys_length)  # [btz, hdsz]
+
+        # dnn部分
+        deep_input_emb = torch.cat([deep_input_emb.squeeze(1), hist], dim=-1)  # [btz, hdsz]
+        dnn_input = combined_dnn_input([deep_input_emb], emb_lists[-1])  # [btz, hdsz]
+        dnn_output = self.dnn(dnn_input)
+        dnn_logit = self.dnn_linear(dnn_output)
+
+        # 输出
+        y_pred = self.out(dnn_logit)
+
+        return y_pred
