@@ -433,3 +433,48 @@ class InterestEvolving(nn.Module):
         # [b, H] -> [B, H]
         zero_outputs[smp_mask.squeeze(1)] = outputs
         return zero_outputs
+
+
+class CrossNet(nn.Module):
+    """The Cross Network part of Deep&Cross Network model,
+    """
+    def __init__(self, in_features, layer_num=2, parameterization='vector'):
+        super(CrossNet, self).__init__()
+        self.layer_num = layer_num
+        self.parameterization = parameterization
+        if self.parameterization == 'vector':
+            # weight in DCN.  (in_features, 1)
+            self.kernels = nn.Parameter(torch.Tensor(self.layer_num, in_features, 1))
+        elif self.parameterization == 'matrix':
+            # weight matrix in DCN-M.  (in_features, in_features)
+            self.kernels = nn.Parameter(torch.Tensor(self.layer_num, in_features, in_features))
+        else:  # error
+            raise ValueError("parameterization should be 'vector' or 'matrix'")
+
+        self.bias = nn.Parameter(torch.Tensor(self.layer_num, in_features, 1))
+
+        for i in range(self.kernels.shape[0]):
+            nn.init.xavier_normal_(self.kernels[i])
+        for i in range(self.bias.shape[0]):
+            nn.init.zeros_(self.bias[i])
+
+
+    def forward(self, inputs):
+        """
+        inputs: [btz, hdsz]
+        """
+        x_0 = inputs.unsqueeze(2)  # [btz, hdsz, 1]
+        x_l = x_0
+        for i in range(self.layer_num):
+            if self.parameterization == 'vector':
+                xl_w = torch.tensordot(x_l, self.kernels[i], dims=([1], [0]))
+                dot_ = torch.matmul(x_0, xl_w)
+                x_l = dot_ + self.bias[i] + x_l
+            elif self.parameterization == 'matrix':
+                xl_w = torch.matmul(self.kernels[i], x_l)  # W * xi  (bs, in_features, 1)
+                dot_ = xl_w + self.bias[i]  # W * xi + b
+                x_l = x_0 * dot_ + x_l  # x0 · (W * xi + b) +xl  Hadamard-product
+            else:  # error
+                raise ValueError("parameterization should be 'vector' or 'matrix'")
+        x_l = torch.squeeze(x_l, dim=2)
+        return x_l

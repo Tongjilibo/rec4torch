@@ -160,7 +160,7 @@ def create_embedding_matrix(feature_columns, init_std=1e-4, linear=False, sparse
     return embedding_dict
 
 
-def embedding_lookup(X, embedding_dict, feature_index, sparse_feature_columns, return_feat_list=[]):
+def embedding_lookup(X, embedding_dict, feature_index, sparse_feature_columns, return_feat_list=[], return_dict=False):
     """离散特征经embedding并返回, 去掉了
     embedding_dict: 特征对应的embedding
     feature_index:  特征对应的col区间
@@ -169,6 +169,7 @@ def embedding_lookup(X, embedding_dict, feature_index, sparse_feature_columns, r
 
     multi = False
     if len(return_feat_list) == 0:
+        return_feat_list = [fc.name for fc in sparse_feature_columns]
         return_feat_list_flat = [fc.name for fc in sparse_feature_columns]
     elif isinstance(return_feat_list[0], (list, tuple)):
         # 嵌套一层
@@ -186,8 +187,9 @@ def embedding_lookup(X, embedding_dict, feature_index, sparse_feature_columns, r
             emb = embedding_dict[fc.embedding_name](X[:, lookup_idx[0]:lookup_idx[1]].long())
             embedding_vec_dict[feature_name] = emb
     
-    # 嵌套多个
-    if multi:
+    if return_dict:
+        return embedding_vec_dict
+    elif multi:
         return [[embedding_vec_dict[j] for j in i] for i in return_feat_list]
     else:
         return [embedding_vec_dict[i] for i in return_feat_list]

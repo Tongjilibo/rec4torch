@@ -13,7 +13,7 @@
 
 
 ## 2. 功能
-- 基于pytorch实现各类推荐算法(DeepFM, WideDeep, DIN)
+- 基于pytorch实现各类推荐算法(DeepFM, WideDeep, DCN, DIN, DIEN)
 
 
 ## 3. 快速上手
