@@ -7,9 +7,9 @@ from rec4torch.inputs import SparseFeat, DenseFeat, VarLenSparseFeat, get_featur
 from rec4torch.models import DIEN
 from rec4torch.snippets import seed_everything
 
-batch_size = 16
+batch_size = 2
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-seed_everything(42)
+seed_everything(1024)
 
 
 def get_xy_fd(use_neg=False, hash_flag=False):

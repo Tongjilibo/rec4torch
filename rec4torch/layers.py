@@ -1,4 +1,3 @@
-from turtle import forward
 from torch import nn
 import torch.nn.functional as F
 import torch
@@ -109,7 +108,6 @@ class AttentionSequencePoolingLayer(nn.Module):
         super(AttentionSequencePoolingLayer, self).__init__()
         self.return_score = return_score
         self.weight_normalization = weight_normalization
-
         # 局部注意力单元
         self.dnn = DNN(input_dim=4 * embedding_dim, hidden_units=att_hidden_units, activation=att_activation, 
                        dice_dim=kwargs.get('dice_dim', 3), use_bn=kwargs.get('dice_dim', False), dropout_rate=kwargs.get('dropout_rate', 0))
@@ -155,12 +153,12 @@ class AttentionSequencePoolingLayer(nn.Module):
 class InterestExtractor(nn.Module):
     """DIEN中的兴趣提取模块
     """
-    def __init__(self, input_size, use_neg=False, init_std=0.001):
+    def __init__(self, input_size, use_neg=False, dnn_hidden_units=[100, 50, 1], init_std=0.001):
         super(InterestExtractor, self).__init__()
         self.use_neg = use_neg
         self.gru = nn.GRU(input_size=input_size, hidden_size=input_size, batch_first=True)
         if self.use_neg:
-            self.auxiliary_net = DNN(input_size * 2, [100, 50, 1], 'sigmoid', init_std=init_std)
+            self.auxiliary_net = DNN(input_size * 2, dnn_hidden_units, 'sigmoid', init_std=init_std)
         for name, tensor in self.gru.named_parameters():
             if 'weight' in name:
                 nn.init.normal_(tensor, mean=0, std=init_std)

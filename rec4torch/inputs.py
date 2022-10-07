@@ -4,7 +4,6 @@ from torch import nn
 from rec4torch.layers import SequencePoolingLayer
 import numpy as np
 import pandas as pd
-from itertools import chain
 
 DEFAULT_GROUP_NAME = "default_group"
 
