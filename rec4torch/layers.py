@@ -436,7 +436,8 @@ class InterestEvolving(nn.Module):
 
 
 class CrossNet(nn.Module):
-    """The Cross Network part of Deep&Cross Network model,
+    """The Cross Network part of Deep&Cross Network model
+    
     """
     def __init__(self, in_features, layer_num=2, parameterization='vector'):
         super(CrossNet, self).__init__()
@@ -461,14 +462,21 @@ class CrossNet(nn.Module):
 
     def forward(self, inputs):
         """
-        inputs: [btz, hdsz]
+        inputs: [btz, in_features]
         """
-        x_0 = inputs.unsqueeze(2)  # [btz, hdsz, 1]
+        x_0 = inputs.unsqueeze(2)  # [btz, in_features, 1]
         x_l = x_0
         for i in range(self.layer_num):
             if self.parameterization == 'vector':
+                # 这里先计算的后两项 x' * W: [btz, in_features, 1] * [in_features, 1] = [btz, 1, 1]
+                # 再计算x0*xl_w [btz, in_features, 1] * [btz, 1, 1] = [btz, in_features, 1]
                 xl_w = torch.tensordot(x_l, self.kernels[i], dims=([1], [0]))
                 dot_ = torch.matmul(x_0, xl_w)
+
+                # 也可以先计算前两项, 已经验证过两者是相等的
+                # xl_w = torch.matmul(x_l, self.kernels[i].T)  # [btz, in_features, in_features]
+                # dot_ = torch.matmul(xl_w, x_0)  # [btz, in_features, 1]
+
                 x_l = dot_ + self.bias[i] + x_l
             elif self.parameterization == 'matrix':
                 xl_w = torch.matmul(self.kernels[i], x_l)  # W * xi  (bs, in_features, 1)
@@ -476,5 +484,5 @@ class CrossNet(nn.Module):
                 x_l = x_0 * dot_ + x_l  # x0 · (W * xi + b) +xl  Hadamard-product
             else:  # error
                 raise ValueError("parameterization should be 'vector' or 'matrix'")
-        x_l = torch.squeeze(x_l, dim=2)
+        x_l = torch.squeeze(x_l, dim=2)  # [btz, in_features]
         return x_l

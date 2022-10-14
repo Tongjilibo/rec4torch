@@ -519,3 +519,13 @@ def split_columns(feature_columns, select_columns=('sparse', 'dense', 'var_spars
         res.append(list(filter(lambda x: isinstance(x, col_type), feature_columns)) if len(feature_columns) else [])
     
     return res[0] if len(res) == 1 else res
+
+
+def get_kw(cls, kwargs):
+    '''保留排除cls的入参后的kwargs
+    '''
+    kwargs_new = {}
+    for k in kwargs:
+        if k not in set(inspect.getargspec(cls)[0]):
+            kwargs_new[k] = kwargs[k]
+    return kwargs_new

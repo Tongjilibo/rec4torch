@@ -7,7 +7,7 @@ from inspect import isfunction
 from rec4torch.inputs import build_input_features, SparseFeat, DenseFeat, VarLenSparseFeat, get_varlen_pooling_list
 from rec4torch.inputs import combined_dnn_input, create_embedding_matrix, embedding_lookup, maxlen_lookup
 from rec4torch.layers import FM, DNN, PredictionLayer, AttentionSequencePoolingLayer, InterestExtractor, InterestEvolving, CrossNet
-from rec4torch.snippets import metric_mapping, ProgbarLogger, EarlyStopping, split_columns
+from rec4torch.snippets import metric_mapping, ProgbarLogger, EarlyStopping, split_columns, get_kw
 
 
 class BaseModel(nn.Module):
@@ -281,9 +281,18 @@ class BaseModelDDP(BaseModel, nn.parallel.DistributedDataParallel):
 
 
 class Linear(nn.Module):
-    """把Sparse+VarLenSparse经过embeddingg后，和Dense特征Pooling在一起
-    feature_columns: 
-    feature_index:
+    """浅层线性全连接，也就是Wide&Cross的Wide部分
+    步骤：
+    1. Sparse特征分别过embedding, 得到多个[btz, 1, 1]
+    2. VarLenSparse过embeddingg+pooling后，得到多个[btz, 1, 1]
+    3. Dense特征直接取用, 得到多个[btz, dense_len]
+    4. Sparse和VarLenSparse进行cat得到[btz, 1, featnum]，再sum_pooling得到[btz, 1]的输出
+    5. Dense特征过[dense_len, 1]的全连接得到[btz, 1]的输出
+    6. 两者求和得到最后输出
+    
+    参数：
+    feature_columns: 各个特征的[SparseFeat, VarlenSparseFeat, DenseFeat, ...]的列表
+    feature_index: 每个特征在输入tensor X中的列的起止
     """
     def __init__(self, feature_columns, feature_index, init_std=1e-4, device='cpu'):
         super(Linear, self).__init__()
@@ -327,7 +336,7 @@ class Linear(nn.Module):
 
 class RecBase(BaseModel):
     def __init__(self, linear_feature_columns, dnn_feature_columns, l2_reg_linear=1e-5, l2_reg_embedding=1e-5,
-                 init_std=1e-4, task='binary'):
+                 init_std=1e-4, task='binary', **kwargs):
         super(RecBase, self).__init__()
         self.dnn_feature_columns = dnn_feature_columns
         self.aux_loss = 0  # 目前只看到dien里面使用
@@ -348,7 +357,7 @@ class RecBase(BaseModel):
         self.out = PredictionLayer(task, )
 
     def input_from_feature_columns(self, X, feature_columns, embedding_dict, support_dense=True):
-        """SparseFeat和VarLenSparseFeat生成Embedding，VarLenSparseFeat要过Pooling
+        """SparseFeat和VarLenSparseFeat生成Embedding，VarLenSparseFeat要过Pooling, DenseFeat直接从X中取用
         """
         sparse_feature_columns, dense_feature_columns, varlen_sparse_feature_columns = split_columns(feature_columns)
 
@@ -369,6 +378,8 @@ class RecBase(BaseModel):
         return sparse_embedding_list + varlen_sparse_embedding_list, dense_value_list
 
     def compute_input_dim(self, feature_columns, feature_names=[('sparse', 'var_sparse', 'dense')], feature_group=False):
+        '''计算输入维度和，Sparse/VarlenSparse的embedding_dim + Dense的dimesion
+        '''
         def get_dim(feat):
             if isinstance(feat, DenseFeat):
                 return feat.dimension
@@ -479,11 +490,13 @@ class DeepFM(RecBase):
 
 class WideDeep(RecBase):
     """WideDeep的实现
+    Wide部分是SparseFeat过embedding, VarlenSparseFeat过embedding+pooling, Dense特征直接取用
+    Deep部分所有特征打平[btz, sparse_feat_cnt*emb_size+dense_feat_cnt]过DNN
     Reference: [1] Cheng H T, Koc L, Harmsen J, et al. Wide & deep learning for recommender systems[C]//Proceedings of the 1st Workshop on Deep Learning for Recommender Systems. ACM, 2016: 7-10.(https://arxiv.org/pdf/1606.07792.pdf)
     """
     def __init__(self, linear_feature_columns, dnn_feature_columns, dnn_hidden_units=(256, 128),
                  l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4, 
-                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary'):
+                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary', **kwargs):
         super(WideDeep, self).__init__(linear_feature_columns, dnn_feature_columns, l2_reg_linear=l2_reg_linear,
                                      l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
 
@@ -495,11 +508,13 @@ class WideDeep(RecBase):
             self.add_regularization_weight(self.dnn_linear.weight, l2=l2_reg_dnn)
 
     def forward(self, X):
+        # SparseFeat和VarLenSparseFeat生成Embedding，VarLenSparseFeat要过Pooling, DenseFeat直接从X中取用
         sparse_embedding_list, dense_value_list = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
         logit = self.linear_model(X)  # [btz, 1]
 
         if hasattr(self, 'dnn') and hasattr(self, 'dnn_linear'):
-            dnn_input = combined_dnn_input(sparse_embedding_list, dense_value_list)  # [btz, sparse_feat_cnt*emb_size+dense_feat_cnt]
+            # 所有特征打平并concat在一起，[btz, sparse_feat_cnt*emb_size+dense_feat_cnt]
+            dnn_input = combined_dnn_input(sparse_embedding_list, dense_value_list)
             dnn_output = self.dnn(dnn_input)
             dnn_logit = self.dnn_linear(dnn_output)
             logit += dnn_logit
@@ -509,45 +524,53 @@ class WideDeep(RecBase):
         return y_pred
 
 
-class DCN(WideDeep):
+class DeepCross(WideDeep):
     """Deep&Cross
+    和Wide&Deep相比，是用CrossNet替换了linear_model
     [1] Wang R, Fu B, Fu G, et al. Deep & cross network for ad click predictions[C]//Proceedings of the ADKDD'17. ACM, 2017: 12. (https://arxiv.org/abs/1708.05123)
     [2] Wang R, Shivanna R, Cheng D Z, et al. DCN-M: Improved Deep & Cross Network for Feature Cross Learning in Web-scale Learning to Rank Systems[J]. 2020. (https://arxiv.org/abs/2008.13535)
     """
     def __init__(self, linear_feature_columns, dnn_feature_columns, cross_num=2, cross_parameterization='vector',
                  dnn_hidden_units=(128, 128), l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_cross=1e-5,
-                 l2_reg_dnn=0, init_std=0.0001, dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary'):
-        super(DCN, self).__init__(linear_feature_columns, dnn_feature_columns, l2_reg_linear=l2_reg_linear,
-                                l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
+                 l2_reg_dnn=0, init_std=0.0001, dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary', use_linear=False, **kwargs):
+        super(DeepCross, self).__init__(linear_feature_columns, dnn_feature_columns, l2_reg_linear=l2_reg_linear, l2_reg_dnn=l2_reg_dnn, dnn_use_bn=dnn_use_bn,
+                                l2_reg_embedding=l2_reg_embedding, dnn_dropout=dnn_dropout, dnn_activation=dnn_activation, init_std=init_std, task=task)
+        # import inspect
+        # super(DeepCross, self).__init__(linear_feature_columns, dnn_feature_columns, **dict(zip(inspect.getargspec(DeepCross)[0][3:], inspect.getargspec(DeepCross)[3])))
+        # 默认应该不使用linear_model
+        if not use_linear:
+            del self.linear_model
 
-        if len(dnn_hidden_units) > 0 and cross_num > 0:
-            dnn_linear_in_feature = self.compute_input_dim(dnn_feature_columns) + dnn_hidden_units[-1]
-        elif len(dnn_hidden_units) > 0:
-            dnn_linear_in_feature = dnn_hidden_units[-1]
-        elif cross_num > 0:
-            dnn_linear_in_feature = self.compute_input_dim(dnn_feature_columns)
-
-        self.dnn_linear = nn.Linear(dnn_linear_in_feature, 1, bias=False)
+        dnn_linear_in_feature = 0
+        if len(dnn_hidden_units) > 0:
+            dnn_linear_in_feature += dnn_hidden_units[-1]
+        if cross_num > 0:
+            dnn_linear_in_feature += self.compute_input_dim(dnn_feature_columns)
+        
+        if dnn_linear_in_feature > 0:
+            self.dnn_linear = nn.Linear(dnn_linear_in_feature, 1, bias=False)
         self.crossnet = CrossNet(in_features=self.compute_input_dim(dnn_feature_columns),
                                  layer_num=cross_num, parameterization=cross_parameterization)
         self.add_regularization_weight(self.crossnet.kernels, l2=l2_reg_cross)
 
     def forward(self, X):
         sparse_embedding_list, dense_value_list = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
-        logit = self.linear_model(X)  # [btz, 1]
+        logit = self.linear_model(X) if hasattr(self, 'linear_model') else 0 # [btz, 1]
 
         dnn_input = combined_dnn_input(sparse_embedding_list, dense_value_list)  # [btz, sparse_feat_cnt*emb_size+dense_feat_cnt]
 
-        stack_out = []
+        # CrossNetwork
+        stack_out = [self.crossnet(dnn_input)]
+
+        # Deep Network
         if hasattr(self, 'dnn'):
             stack_out.append(self.dnn(dnn_input))
-        if hasattr(self, 'crossnet'):
-            stack_out.append(self.crossnet(dnn_input))
         stack_out = torch.cat(stack_out, dim=-1)
 
         if hasattr(self, 'dnn_linear'):
             logit += self.dnn_linear(stack_out)
 
+        # Out
         y_pred = self.out(logit)
         return y_pred
 

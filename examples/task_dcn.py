@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import LabelEncoder
 from rec4torch.inputs import SparseFeat, VarLenSparseFeat, build_input_array
-from rec4torch.models import DCN
+from rec4torch.models import DeepCross
 from rec4torch.snippets import sequence_padding, seed_everything
 
 batch_size = 16
@@ -54,7 +54,7 @@ train_X, train_y, linear_feature_columns, dnn_feature_columns = get_data()
 train_dataloader = DataLoader(TensorDataset(train_X, train_y), batch_size=batch_size, shuffle=True) 
 
 # 模型定义
-model = DCN(linear_feature_columns, dnn_feature_columns, task='regression')
+model = DeepCross(linear_feature_columns, dnn_feature_columns, task='regression')
 model.to(device)
 
 model.compile(
