@@ -531,12 +531,10 @@ class DeepCross(WideDeep):
     [2] Wang R, Shivanna R, Cheng D Z, et al. DCN-M: Improved Deep & Cross Network for Feature Cross Learning in Web-scale Learning to Rank Systems[J]. 2020. (https://arxiv.org/abs/2008.13535)
     """
     def __init__(self, linear_feature_columns, dnn_feature_columns, cross_num=2, cross_parameterization='vector',
-                 dnn_hidden_units=(128, 128), l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_cross=1e-5,
+                 dnn_hidden_units=(256, 128), l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_cross=1e-5,
                  l2_reg_dnn=0, init_std=0.0001, dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary', use_linear=False, **kwargs):
-        super(DeepCross, self).__init__(linear_feature_columns, dnn_feature_columns, l2_reg_linear=l2_reg_linear, l2_reg_dnn=l2_reg_dnn, dnn_use_bn=dnn_use_bn,
-                                l2_reg_embedding=l2_reg_embedding, dnn_dropout=dnn_dropout, dnn_activation=dnn_activation, init_std=init_std, task=task)
-        # import inspect
-        # super(DeepCross, self).__init__(linear_feature_columns, dnn_feature_columns, **dict(zip(inspect.getargspec(DeepCross)[0][3:], inspect.getargspec(DeepCross)[3])))
+        super(DeepCross, self).__init__(linear_feature_columns, dnn_feature_columns, **get_kw(DeepCross, locals()))
+
         # 默认应该不使用linear_model
         if not use_linear:
             del self.linear_model
