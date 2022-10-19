@@ -48,7 +48,7 @@ class ResidualNetwork(nn.Module):
         assert isinstance(hidden_units, (tuple, list)) and len(hidden_units) > 0, 'hidden_unit support non_empty list/tuple inputs'
         self.dropout = nn.Dropout(dropout_rate)
 
-        self.layers, layer = [], []
+        self.layers, layer = nn.ModuleList(), []
         for i in range(len(hidden_units)):
             # Linear
             layer.append(nn.Linear(input_dim, hidden_units[i]))
