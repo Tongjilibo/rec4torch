@@ -16,10 +16,19 @@ class DNN(nn.Module):
 
         layers = []
         for i in range(len(hidden_units)-1):
-            layers.append(nn.Linear(hidden_units[i], hidden_units[i+1]))  # 全连接层
-            if use_bn:  # BatchNorm
+            # Linear
+            layers.append(nn.Linear(hidden_units[i], hidden_units[i+1]))
+            
+            # BatchNorm
+            if use_bn:
                 layers.append(nn.BatchNorm1d(hidden_units[i+1]))
+
+            # Activation
             layers.append(activation_layer(activation, hidden_units[i + 1], dice_dim))
+
+            # Dropout
+            layers.append(self.dropout)
+
         self.layers = nn.Sequential(*layers)
 
         for name, tensor in self.layers.named_parameters():
@@ -29,6 +38,47 @@ class DNN(nn.Module):
     def forward(self, inputs):
         # inputs: [btz, ..., input_dim]
         return self.layers(inputs)  # [btz, ..., hidden_units[-1]]
+
+
+class ResidualNetwork(nn.Module):
+    '''残差连接
+    '''
+    def __init__(self, input_dim, hidden_units, activation='relu', dropout_rate=0, use_bn=False, init_std=1e-4, dice_dim=3):
+        super(ResidualNetwork, self).__init__()
+        assert isinstance(hidden_units, (tuple, list)) and len(hidden_units) > 0, 'hidden_unit support non_empty list/tuple inputs'
+        self.dropout = nn.Dropout(dropout_rate)
+
+        self.layers, layer = [], []
+        for i in range(len(hidden_units)):
+            # Linear
+            layer.append(nn.Linear(input_dim, hidden_units[i]))
+            
+            # BatchNorm
+            if use_bn:
+                layer.append(nn.BatchNorm1d(hidden_units[i]))
+
+            # Activation
+            layer.append(activation_layer(activation, hidden_units[i], dice_dim))
+
+            # Linear
+            layer.append(nn.Linear(hidden_units[i], input_dim))
+
+            # Dropout
+            layer.append(self.dropout)
+
+            self.layers.append(nn.Sequential(*layer))
+
+        for layer in self.layers:
+            for name, tensor in layer.named_parameters():
+                if 'weight' in name:
+                    nn.init.normal_(tensor, mean=0, std=init_std)
+
+    def forward(self, inputs):
+        # inputs: [btz, ..., input_dim]
+        raw_inputs = inputs
+        for layer in self.layers:
+            inputs = raw_inputs + layer(inputs)
+        return inputs  # [btz, ..., input_dim]
 
 
 class PredictionLayer(nn.Module):
@@ -437,7 +487,7 @@ class InterestEvolving(nn.Module):
 
 class CrossNet(nn.Module):
     """The Cross Network part of Deep&Cross Network model
-    
+
     """
     def __init__(self, in_features, layer_num=2, parameterization='vector'):
         super(CrossNet, self).__init__()

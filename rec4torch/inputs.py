@@ -143,14 +143,16 @@ def combined_dnn_input(sparse_embedding_list, dense_value_list):
         raise NotImplementedError
 
 
-def create_embedding_matrix(feature_columns, init_std=1e-4, linear=False, sparse=False, device='cpu'):
+def create_embedding_matrix(feature_columns, init_std=1e-4, out_dim=0, sparse=False):
     """为Sparse, VarLenSparse进行embedding
        返回{embedding_name: nn.EmbeddingBag}
+       feature_columns: 所有的特征列
+       linear: Embedding的输出维度是否自定义，默认为0即使用user自己的
     """
     sparse_feature_columns = list(filter(lambda x: isinstance(x, SparseFeat), feature_columns)) if len(feature_columns) else []
     var_sparse_feature_columns = list(filter(lambda x: isinstance(x, VarLenSparseFeat), feature_columns)) if len(feature_columns) else []
     embedding_dict = nn.ModuleDict(
-        {feat.embedding_name: nn.Embedding(feat.vocabulary_size, feat.embedding_dim if not linear else 1, sparse=sparse) 
+        {feat.embedding_name: nn.Embedding(feat.vocabulary_size, feat.embedding_dim if out_dim == 0 else out_dim, sparse=sparse) 
         for feat in sparse_feature_columns+var_sparse_feature_columns}
     )
     
