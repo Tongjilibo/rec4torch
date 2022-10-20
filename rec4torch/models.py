@@ -1,16 +1,16 @@
-from nntplib import NNTPProtocolError
-from turtle import forward
 import torch
 from torch import nn
-from collections import OrderedDict
-from inspect import isfunction
 from rec4torch.inputs import build_input_features, SparseFeat, DenseFeat, VarLenSparseFeat, get_varlen_pooling_list
 from rec4torch.inputs import combined_dnn_input, create_embedding_matrix, embedding_lookup, maxlen_lookup
 from rec4torch.layers import FM, DNN, PredictionLayer, AttentionSequencePoolingLayer, InterestExtractor, InterestEvolving, CrossNet, ResidualNetwork
 from rec4torch.snippets import  split_columns, get_kw
 from torch4keras import BaseModel as BM
 
+
 class BaseModel(BM):
+    '''之前是在rec4torch内部实现的，之后单独为Trainer做了一个包torch4keras
+       这里是继承torch4keras的BaseModel作为Trainer，并在其基础上加了res_loss和aux_loss
+    '''
     def train_step(self, train_X, train_y):
         output, loss, loss_detail = super().train_step(train_X, train_y)
         # 由于前面可能使用了梯度累积，因此这里恢复一下
@@ -19,6 +19,9 @@ class BaseModel(BM):
         # l1正则和l2正则
         reg_loss = self.get_regularization_loss()
         loss = loss + reg_loss + self.aux_loss
+
+        # 梯度累积
+        loss = loss * self.grad_accumulation_steps if self.grad_accumulation_steps > 1 else loss
         return output, loss, loss_detail
     
 
