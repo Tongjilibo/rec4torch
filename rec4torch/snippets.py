@@ -3,7 +3,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 import inspect
 from rec4torch.inputs import SparseFeat, DenseFeat, VarLenSparseFeat
-from torch4keras import *
+from torch4keras.snippets import *
 
 
 def sequence_padding(inputs, length=None, value=0, seq_dims=1, mode='post'):
