@@ -4,7 +4,7 @@ from rec4torch.inputs import build_input_features, SparseFeat, DenseFeat, VarLen
 from rec4torch.inputs import combined_dnn_input, create_embedding_matrix, embedding_lookup, maxlen_lookup
 from rec4torch.layers import FM, DNN, PredictionLayer, AttentionSequencePoolingLayer, InterestExtractor, InterestEvolving, CrossNet, ResidualNetwork
 from rec4torch.snippets import  split_columns, get_kw
-from torch4keras import BaseModel as BM
+from torch4keras.model import BaseModel as BM
 
 
 class BaseModel(BM):

@@ -24,4 +24,5 @@
 
 
 ## 5. 更新：
-- **2022年9月30更新**：初版提交, 训练过程修改为传入dataloader(参考bert4torch)，合并models和layers(模型结构较简单)，合并简化embedding_lookup，去掉一些重复的embedding过程(提速)
+- **20221027**：增加deepcrossing, ncf, din, dien算法，使用torch4keras作为trainer
+- **20220930**：初版提交, 训练过程修改为传入dataloader(参考bert4torch)，合并models和layers(模型结构较简单)，合并简化embedding_lookup，去掉一些重复的embedding过程(提速)
