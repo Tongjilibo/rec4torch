@@ -9,7 +9,14 @@
 [![contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat)](https://github.com/Tongjilibo/rec4torch/issues)
 
 ## 1. 下载安装
-- 开发中
+安装稳定版
+```shell
+pip install rec4torch
+```
+安装最新版
+```shell
+pip install git+https://www.github.com/Tongjilibo/rec4torch.git
+```
 
 
 ## 2. 功能
@@ -17,10 +24,12 @@
 
 
 ## 3. 快速上手
-- 参考了[deepctr-torch](https://github.com/shenweichen/DeepCTR-Torch)
+- 参考了[deepctr-torch](https://github.com/shenweichen/DeepCTR-Torch), 使用[torch4keras](https://github.com/Tongjilibo/torch4keras)中作为Trainer
+- [测试用例](https://github.com/Tongjilibo/rec4torch/tree/master/examples)
 
 
 ## 4. 版本说明
+- **v0.0.1**：20221027 dcn, deepcrossing, deepfm, din, dien, wide&deep, ncf等模型，训练过程修改为传入dataloader，合并models和layers，合并简化embedding_lookup，去掉一些重复的embedding过程(提速)
 
 
 ## 5. 更新：
