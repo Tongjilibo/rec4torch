@@ -57,7 +57,7 @@ class Linear(nn.Module):
         sparse_embedding_list = [self.embedding_dict[feat.embedding_name](X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]].long())
                                  for feat in self.sparse_feature_columns]
         # 连续变量直接取值 [(btz, dense_len), (btz, dense_len)]
-        dense_value_list = [X[:, self.feature_index[self.feature_index[feat.name][0]:self.feature_index[feat.name][1]]] for feat in self.dense_feature_columns]
+        dense_value_list = [X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]] for feat in self.dense_feature_columns]
 
         # 变长离散变量过embdding: {feat_name: (btz, seq_len, 1)}, [(btz,1,1), (btz,1,1), ...]
         sequence_embed_dict = embedding_lookup(X, self.embedding_dict, self.feature_index, self.varlen_sparse_feature_columns, return_dict=True)
