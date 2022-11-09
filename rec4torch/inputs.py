@@ -222,3 +222,20 @@ def maxlen_lookup(X, feature_index, col_name, padding=0):
     lookup_idx = np.array(feature_index[col_name[0]])
     max_len = X[:, lookup_idx[0]:lookup_idx[1]].ne(padding)
     return torch.sum(max_len.long(), dim=-1, keepdim=True)  # [btz, 1]
+
+
+class TensorDataset(torch.utils.data.TensorDataset):
+    '''继承官方的TensorDataset, 添加指定tensor类型和device功能，防止全部数据放到gpu显存过大
+    '''
+    def __init__(self, *tensors: torch.Tensor, dtype=None, device=None) -> None:
+        super().__init__(*tensors)
+        self.dtype = dtype
+        self.device = device
+    
+    def __getitem__(self, index):
+        batch = tuple(tensor[index] for tensor in self.tensors)
+        if self.dtype:
+            batch = tuple(tensor.type(self.dtype) for tensor in batch)
+        if self.device:
+            batch = tuple(tensor.to(self.device) for tensor in batch)
+        return batch

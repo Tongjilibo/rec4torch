@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 from torch import nn, optim
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 from sklearn.preprocessing import LabelEncoder
-from rec4torch.inputs import DenseFeat, SparseFeat, VarLenSparseFeat, build_input_array
+from rec4torch.inputs import DenseFeat, SparseFeat, VarLenSparseFeat, build_input_array, TensorDataset
 from rec4torch.models import DeepFM
 from rec4torch.snippets import sequence_padding, seed_everything, Evaluator
 from sklearn.metrics import mean_squared_error
@@ -47,13 +47,13 @@ def get_data():
     
     # 生成训练样本
     train_X, train_y = build_input_array(data, linear_feature_columns+dnn_feature_columns, target=['rating'])
-    train_X = torch.tensor(train_X, dtype=torch.float, device=device)
-    train_y = torch.tensor(train_y, dtype=torch.float, device=device)
+    train_X = torch.tensor(train_X)
+    train_y = torch.tensor(train_y)
     return train_X, train_y, linear_feature_columns, dnn_feature_columns
 
 # 加载数据集
 train_X, train_y, linear_feature_columns, dnn_feature_columns = get_data()
-train_dataloader = DataLoader(TensorDataset(train_X, train_y), batch_size=batch_size, shuffle=True) 
+train_dataloader = DataLoader(TensorDataset(train_X, train_y, dtype=torch.float, device=device), batch_size=batch_size, shuffle=True) 
 
 # 模型定义
 model = DeepFM(linear_feature_columns, dnn_feature_columns, task='regression')
@@ -70,8 +70,8 @@ class MyEvaluator(Evaluator):
         y_trues, y_preds = [], []
         for X, y in train_dataloader:
             y_pred = self.model.predict(X)
-            y_trues.append(y.numpy())
-            y_preds.append(y_pred.numpy())
+            y_trues.append(y.cpu().numpy())
+            y_preds.append(y_pred.cpu().numpy())
         return {'mse': mean_squared_error(np.concatenate(y_preds), np.concatenate(y_trues))}
 
 if __name__ == "__main__":
