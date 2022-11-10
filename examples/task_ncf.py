@@ -37,7 +37,7 @@ train_X, train_y, dnn_feature_columns = get_data()
 train_dataloader = DataLoader(TensorDataset(train_X, train_y), batch_size=batch_size, shuffle=True) 
 
 # 模型定义
-model = NeuralCF(dnn_feature_columns, task='regression')
+model = NeuralCF(dnn_feature_columns)
 model.to(device)
 
 model.compile(

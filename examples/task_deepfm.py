@@ -54,7 +54,7 @@ train_X, train_y, linear_feature_columns, dnn_feature_columns = get_data()
 train_dataloader = DataLoader(TensorDataset(train_X, train_y), batch_size=batch_size, shuffle=True) 
 
 # 模型定义
-model = DeepFM(linear_feature_columns, dnn_feature_columns, task='regression')
+model = DeepFM(linear_feature_columns, dnn_feature_columns)
 model.to(device)
 
 model.compile(

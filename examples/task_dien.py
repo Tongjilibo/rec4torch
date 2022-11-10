@@ -65,7 +65,7 @@ if __name__ == "__main__":
     model.to(device)
     
     model.compile(
-        loss=F.binary_cross_entropy,
+        loss=nn.BCEWithLogitsLoss(),
         optimizer=optim.Adam(model.parameters()),
     )
 

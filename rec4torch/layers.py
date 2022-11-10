@@ -82,20 +82,20 @@ class ResidualNetwork(nn.Module):
 
 
 class PredictionLayer(nn.Module):
-    def __init__(self, task='binary', use_bias=True, **kwargs):
+    def __init__(self, out_dim=1, use_bias=True, logit_transform=None, **kwargs):
         super(PredictionLayer, self).__init__()
-        assert task in {"binary", "multiclass", "regression"}, "task must be binary,multiclass or regression"
-        self.task = task
-
+        self.logit_transform = logit_transform
         if use_bias:
-            self.bias = nn.Parameter(torch.zeros((1,)))
+            self.bias = nn.Parameter(torch.zeros((out_dim,)))
         
     def forward(self, X):
         output =  X
         if hasattr(self, 'bias'):
             output += self.bias
-        if self.task == 'binary':
+        if self.logit_transform == 'sigmoid':
             output = torch.sigmoid(output)
+        elif self.logit_transform == 'softmax':
+            output = torch.softmax(output, dim=-1)
         return output
 
 

@@ -39,17 +39,17 @@ class Linear(nn.Module):
     feature_columns: 各个特征的[SparseFeat, VarlenSparseFeat, DenseFeat, ...]的列表
     feature_index: 每个特征在输入tensor X中的列的起止
     """
-    def __init__(self, feature_columns, feature_index, init_std=1e-4, device='cpu'):
+    def __init__(self, feature_columns, feature_index, init_std=1e-4, out_dim=1, **kwargs):
         super(Linear, self).__init__()
         self.feature_index = feature_index
-        self.device = device
+        self.out_dim = out_dim
         self.sparse_feature_columns, self.dense_feature_columns, self.varlen_sparse_feature_columns = split_columns(feature_columns)
         
         # 特征embdding字典，{feat_name: nn.Embedding()}
-        self.embedding_dict = create_embedding_matrix(feature_columns, init_std, out_dim=1, sparse=False)  # out_dim=1表示线性
+        self.embedding_dict = create_embedding_matrix(feature_columns, init_std, out_dim, sparse=False)  # out_dim=1表示线性
         
         if len(self.dense_feature_columns) > 0:
-            self.weight = nn.Parameter(torch.Tensor(sum(fc.dimension for fc in self.dense_feature_columns), 1))
+            self.weight = nn.Parameter(torch.Tensor(sum(fc.dimension for fc in self.dense_feature_columns), out_dim))
             nn.init.normal_(self.weight, mean=0, std=init_std)
 
     def forward(self, X, sparse_feat_refine_weight=None):
@@ -65,7 +65,7 @@ class Linear(nn.Module):
 
         sparse_embedding_list += varlen_embedding_list
 
-        linear_logit = torch.zeros([X.shape[0], 1], device=X.device)
+        linear_logit = torch.zeros([X.shape[0], self.out_dim], device=X.device)
         if len(sparse_embedding_list) > 0:
             sparse_embedding_cat = torch.cat(sparse_embedding_list, dim=-1)  # [btz, 1, feat_cnt]
             if sparse_feat_refine_weight is not None:  # 加权
@@ -73,7 +73,7 @@ class Linear(nn.Module):
             sparse_feat_logit = torch.sum(sparse_embedding_cat, dim=-1)
             linear_logit += sparse_feat_logit
         if len(dense_value_list) > 0:
-            dense_value_logit = torch.cat(dense_value_list, dim=-1).matmul(self.weight)
+            dense_value_logit = torch.cat(dense_value_list, dim=-1).float().matmul(self.weight)
             linear_logit += dense_value_logit
         
         return linear_logit
@@ -81,7 +81,7 @@ class Linear(nn.Module):
 
 class RecBase(BaseModel):
     def __init__(self, linear_feature_columns, dnn_feature_columns, l2_reg_linear=1e-5, l2_reg_embedding=1e-5,
-                 init_std=1e-4, task='binary', **kwargs):
+                 init_std=1e-4, out_dim=1, **kwargs):
         super(RecBase, self).__init__()
         self.dnn_feature_columns = dnn_feature_columns
         self.aux_loss = 0  # 目前只看到dien里面使用
@@ -91,7 +91,7 @@ class RecBase(BaseModel):
 
         # 为SparseFeat和VarLenSparseFeat特征创建embedding
         self.embedding_dict = create_embedding_matrix(dnn_feature_columns, init_std, sparse=False)
-        self.linear_model = Linear(linear_feature_columns, self.feature_index)
+        self.linear_model = Linear(linear_feature_columns, self.feature_index, out_dim=out_dim, **kwargs)
 
         # l1和l2正则
         self.regularization_weight = []
@@ -99,7 +99,7 @@ class RecBase(BaseModel):
         self.add_regularization_weight(self.linear_model.parameters(), l2=l2_reg_linear)
 
         # 输出层
-        self.out = PredictionLayer(task, )
+        self.out = PredictionLayer(out_dim,  **kwargs)
 
     def input_from_feature_columns(self, X, feature_columns, embedding_dict, support_dense=True):
         """SparseFeat和VarLenSparseFeat生成Embedding，VarLenSparseFeat要过Pooling, DenseFeat直接从X中取用
@@ -196,9 +196,9 @@ class DeepCrossing(RecBase):
     """
     def __init__(self, linear_feature_columns, dnn_feature_columns, dnn_hidden_units=(256, 128),
                  l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4,
-                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary'):
+                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, out_dim=1, **kwargs):
         super(DeepCrossing, self).__init__(linear_feature_columns, dnn_feature_columns, l2_reg_linear=l2_reg_linear,
-                                           l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
+                                           l2_reg_embedding=l2_reg_embedding, init_std=init_std, out_dim=out_dim, **kwargs)
         del self.linear_model
         assert len(dnn_feature_columns) > 0 and len(dnn_hidden_units) > 0
 
@@ -230,9 +230,9 @@ class NeuralCF(RecBase):
     """
     def __init__(self, dnn_feature_columns, dnn_hidden_units=(256, 128), dnn_emd_dim=4,
                  l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4,
-                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary'):
+                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, out_dim=1):
         super(NeuralCF, self).__init__([], dnn_feature_columns, l2_reg_linear=l2_reg_linear,
-                                       l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
+                                       l2_reg_embedding=l2_reg_embedding, init_std=init_std, out_dim=out_dim)
         assert len(dnn_feature_columns) == 2
         assert dnn_feature_columns[0].embedding_dim == dnn_feature_columns[1].embedding_dim
 
@@ -274,9 +274,9 @@ class DeepFM(RecBase):
     """
     def __init__(self, linear_feature_columns, dnn_feature_columns, use_fm=True, dnn_hidden_units=(256, 128),
                  l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4,
-                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary'):
+                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, out_dim=1, **kwargs):
         super(DeepFM, self).__init__(linear_feature_columns, dnn_feature_columns, l2_reg_linear=l2_reg_linear,
-                                     l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
+                                     l2_reg_embedding=l2_reg_embedding, init_std=init_std, out_dim=out_dim, **kwargs)
 
         self.use_fm = use_fm
         self.use_dnn = len(dnn_feature_columns) > 0 and len(dnn_hidden_units) > 0
@@ -286,19 +286,19 @@ class DeepFM(RecBase):
         if self.use_dnn:
             self.dnn = DNN(self.compute_input_dim(dnn_feature_columns), dnn_hidden_units, activation=dnn_activation, 
                            dropout_rate=dnn_dropout, use_bn=dnn_use_bn, init_std=init_std)
-            self.dnn_linear = nn.Linear(dnn_hidden_units[-1], 1, bias=False)
+            self.dnn_linear = nn.Linear(dnn_hidden_units[-1], out_dim, bias=False)
             self.add_regularization_weight(filter(lambda x: 'weight' in x[0] and 'bn' not in x[0], self.dnn.named_parameters()), l2=l2_reg_dnn)
             self.add_regularization_weight(self.dnn_linear.weight, l2=l2_reg_dnn)
 
     def forward(self, X):
         # 离散变量过embedding，连续变量保留原值
         sparse_embedding_list, dense_value_list = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
-        logit = self.linear_model(X)  # [btz, 1]
+        logit = self.linear_model(X)  # [btz, out_dim]
 
         if self.use_fm and len(sparse_embedding_list) > 0:
             fm_input = torch.cat(sparse_embedding_list, dim=1)  # [btz, feat_cnt, emb_size]
             # FM仅对离散特征进行交叉
-            logit += self.fm(fm_input)  # [btz, 1]
+            logit += self.fm(fm_input)  # [btz, out_dim]
 
         if self.use_dnn:
             dnn_input = combined_dnn_input(sparse_embedding_list, dense_value_list)  # [btz, sparse_feat_cnt*emb_size+dense_feat_cnt]
@@ -319,9 +319,9 @@ class WideDeep(RecBase):
     """
     def __init__(self, linear_feature_columns, dnn_feature_columns, dnn_hidden_units=(256, 128),
                  l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4, 
-                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary', **kwargs):
+                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, out_dim=1, **kwargs):
         super(WideDeep, self).__init__(linear_feature_columns, dnn_feature_columns, l2_reg_linear=l2_reg_linear,
-                                     l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
+                                     l2_reg_embedding=l2_reg_embedding, init_std=init_std, out_dim=out_dim, **kwargs)
 
         if len(dnn_feature_columns) > 0 and len(dnn_hidden_units) > 0:
             self.dnn = DNN(self.compute_input_dim(dnn_feature_columns), dnn_hidden_units, activation=dnn_activation, 
@@ -355,7 +355,7 @@ class DeepCross(WideDeep):
     """
     def __init__(self, linear_feature_columns, dnn_feature_columns, cross_num=2, cross_parameterization='vector',
                  dnn_hidden_units=(256, 128), l2_reg_linear=1e-5, l2_reg_embedding=1e-5, l2_reg_cross=1e-5,
-                 l2_reg_dnn=0, init_std=0.0001, dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary', use_linear=False, **kwargs):
+                 l2_reg_dnn=0, init_std=0.0001, dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, out_dim=1, use_linear=False, **kwargs):
         super(DeepCross, self).__init__(linear_feature_columns, dnn_feature_columns, **get_kw(DeepCross, locals()))
 
         # 默认应该不使用linear_model
@@ -403,8 +403,8 @@ class DIN(RecBase):
     def __init__(self, dnn_feature_columns, item_history_list, dnn_hidden_units=(256, 128),
                  att_hidden_units=(64, 16), att_activation='Dice', att_weight_normalization=False,
                  l2_reg_embedding=1e-5, l2_reg_dnn=0, init_std=1e-4,
-                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, task='binary'):
-        super(DIN, self).__init__([], dnn_feature_columns, l2_reg_embedding=l2_reg_embedding, init_std=init_std, task=task)
+                 dnn_dropout=0, dnn_activation='relu', dnn_use_bn=False, out_dim=1, **kwargs):
+        super(DIN, self).__init__([], dnn_feature_columns, l2_reg_embedding=l2_reg_embedding, init_std=init_std, out_dim=out_dim, **kwargs)
         del self.linear_model  # 删除不必要的网络结构
         
         self.sparse_feature_columns, self.dense_feature_columns, self.varlen_sparse_feature_columns = split_columns(dnn_feature_columns)
@@ -492,9 +492,9 @@ class DIEN(DIN):
     """
     def __init__(self, dnn_feature_columns, item_history_list, gru_type="GRU", use_negsampling=False, alpha=1.0, 
                  dnn_use_bn=False, dnn_hidden_units=(256, 128), dnn_activation='relu', att_hidden_units=(64, 16), att_activation="relu", 
-                 att_weight_normalization=True, l2_reg_embedding=1e-6, l2_reg_dnn=0, dnn_dropout=0, init_std=0.0001, task='binary'):
+                 att_weight_normalization=True, l2_reg_embedding=1e-6, l2_reg_dnn=0, dnn_dropout=0, init_std=0.0001, out_dim=1, **kwargs):
         super(DIEN, self).__init__(dnn_feature_columns, item_history_list, dnn_hidden_units, att_hidden_units, att_activation, att_weight_normalization, 
-                                   l2_reg_embedding, l2_reg_dnn, init_std, dnn_dropout, dnn_activation, dnn_use_bn, task)
+                                   l2_reg_embedding, l2_reg_dnn, init_std, dnn_dropout, dnn_activation, dnn_use_bn, out_dim, **kwargs)
         del self.attention
         self.alpha = alpha
 

@@ -7,7 +7,7 @@ from sklearn.preprocessing import LabelEncoder
 from rec4torch.inputs import DenseFeat, SparseFeat, VarLenSparseFeat, build_input_array, TensorDataset
 from rec4torch.models import DeepFM
 from rec4torch.snippets import sequence_padding, seed_everything, Evaluator
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import roc_auc_score
 
 batch_size = 16
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -22,6 +22,7 @@ def get_data():
         return list(map(lambda x: key2index[x], key_ans))
 
     data = pd.read_csv("./datasets/movielens_sample.txt")
+    data['rating'] = np.where(data['rating'] > 2, 1, 0)
     sparse_features = ["movie_id", "user_id", "gender", "age", "zip", ]
     dense_features = ["occupation"]
 
@@ -56,13 +57,12 @@ train_X, train_y, linear_feature_columns, dnn_feature_columns = get_data()
 train_dataloader = DataLoader(TensorDataset(train_X, train_y, dtype=torch.float, device=device), batch_size=batch_size, shuffle=True) 
 
 # 模型定义
-model = DeepFM(linear_feature_columns, dnn_feature_columns, task='regression')
+model = DeepFM(linear_feature_columns, dnn_feature_columns)
 model.to(device)
 
 model.compile(
-    loss=nn.MSELoss(),
-    optimizer=optim.Adam(model.parameters()),
-    metrics=['mse']
+    loss=nn.BCEWithLogitsLoss(),
+    optimizer=optim.Adam(model.parameters())
 )
 
 class MyEvaluator(Evaluator):
@@ -72,8 +72,8 @@ class MyEvaluator(Evaluator):
             y_pred = self.model.predict(X)
             y_trues.append(y.cpu().numpy())
             y_preds.append(y_pred.cpu().numpy())
-        return {'mse': mean_squared_error(np.concatenate(y_preds), np.concatenate(y_trues))}
+        return {'auc': roc_auc_score(np.concatenate(y_trues), np.concatenate(y_preds))}
 
 if __name__ == "__main__":
-    evaluator = MyEvaluator(monitor='mse', mode='min')
+    evaluator = MyEvaluator(monitor='auc')
     model.fit(train_dataloader, epochs=10, steps_per_epoch=None, callbacks=[evaluator])

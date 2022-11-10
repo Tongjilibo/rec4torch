@@ -64,6 +64,6 @@ pip install git+https://www.github.com/Tongjilibo/rec4torch.git
 
 
 ## 5. 更新：
-- **20221110**：改写官方的TensorDataset，支持指定类型和device，防止显存占用多大
+- **20221110**：改写官方的TensorDataset，支持指定类型和device，防止显存占用多大，用out_dim和loss来替代task参数，兼容多分类
 - **20221027**：增加deepcrossing, ncf, din, dien算法，使用torch4keras作为trainer
 - **20220930**：初版提交, 训练过程修改为传入dataloader(参考bert4torch)，合并models和layers(模型结构较简单)，合并简化embedding_lookup，去掉一些重复的embedding过程(提速)
