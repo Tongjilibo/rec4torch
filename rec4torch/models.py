@@ -1,9 +1,9 @@
 import torch
 from torch import nn
 from rec4torch.inputs import build_input_features, SparseFeat, DenseFeat, VarLenSparseFeat, get_varlen_pooling_list
-from rec4torch.inputs import combined_dnn_input, create_embedding_matrix, embedding_lookup, maxlen_lookup
+from rec4torch.inputs import combined_dnn_input, create_embedding_matrix, embedding_lookup, maxlen_lookup, split_columns, input_from_feature_columns
 from rec4torch.layers import FM, DNN, PredictionLayer, AttentionSequencePoolingLayer, InterestExtractor, InterestEvolving, CrossNet, ResidualNetwork
-from rec4torch.snippets import  split_columns, get_kw
+from rec4torch.snippets import get_kw
 from torch4keras.model import BaseModel as BM
 
 
@@ -43,6 +43,7 @@ class Linear(nn.Module):
         super(Linear, self).__init__()
         self.feature_index = feature_index
         self.out_dim = out_dim
+        self.feature_columns = feature_columns
         self.sparse_feature_columns, self.dense_feature_columns, self.varlen_sparse_feature_columns = split_columns(feature_columns)
         
         # 特征embdding字典，{feat_name: nn.Embedding()}
@@ -53,17 +54,7 @@ class Linear(nn.Module):
             nn.init.normal_(self.weight, mean=0, std=init_std)
 
     def forward(self, X, sparse_feat_refine_weight=None):
-        # 离散变量过[embedding_size, 1]的embedding, [(btz,1,1), (btz,1,1), ...]
-        sparse_embedding_list = [self.embedding_dict[feat.embedding_name](X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]].long())
-                                 for feat in self.sparse_feature_columns]
-        # 连续变量直接取值 [(btz, dense_len), (btz, dense_len)]
-        dense_value_list = [X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]] for feat in self.dense_feature_columns]
-
-        # 变长离散变量过embdding: {feat_name: (btz, seq_len, 1)}, [(btz,1,1), (btz,1,1), ...]
-        sequence_embed_dict = embedding_lookup(X, self.embedding_dict, self.feature_index, self.varlen_sparse_feature_columns, return_dict=True)
-        varlen_embedding_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index, self.varlen_sparse_feature_columns)
-
-        sparse_embedding_list += varlen_embedding_list
+        sparse_embedding_list, dense_value_list = input_from_feature_columns(X, self.feature_columns, self.feature_index, self.embedding_dict)
 
         linear_logit = torch.zeros([X.shape[0], self.out_dim], device=X.device)
         if len(sparse_embedding_list) > 0:
@@ -100,27 +91,6 @@ class RecBase(BaseModel):
 
         # 输出层
         self.out = PredictionLayer(out_dim,  **kwargs)
-
-    def input_from_feature_columns(self, X, feature_columns, embedding_dict, support_dense=True):
-        """SparseFeat和VarLenSparseFeat生成Embedding，VarLenSparseFeat要过Pooling, DenseFeat直接从X中取用
-        """
-        sparse_feature_columns, dense_feature_columns, varlen_sparse_feature_columns = split_columns(feature_columns)
-
-        if not support_dense and len(dense_feature_columns) > 0:
-            raise ValueError("DenseFeat is not supported in dnn_feature_columns")
-
-        # 离散特征过embedding
-        sparse_embedding_list = [embedding_dict[feat.embedding_name](
-            X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]].long()) for feat in sparse_feature_columns]
-
-        # 序列离散特征过embedding+pooling
-        sequence_embed_dict = embedding_lookup(X, self.embedding_dict, self.feature_index, varlen_sparse_feature_columns, return_dict=True)
-        varlen_sparse_embedding_list = get_varlen_pooling_list(sequence_embed_dict, X, self.feature_index, varlen_sparse_feature_columns)
-        
-        # 连续特征直接保留
-        dense_value_list = [X[:, self.feature_index[feat.name][0]:self.feature_index[feat.name][1]] for feat in dense_feature_columns]
-
-        return sparse_embedding_list + varlen_sparse_embedding_list, dense_value_list
 
     def compute_input_dim(self, feature_columns, feature_names=[('sparse', 'var_sparse', 'dense')], feature_group=False):
         '''计算输入维度和，Sparse/VarlenSparse的embedding_dim + Dense的dimesion
@@ -211,7 +181,7 @@ class DeepCrossing(RecBase):
 
     def forward(self, X):
         # 离散变量过embedding，连续变量保留原值
-        sparse_embedding_list, dense_value_list = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
+        sparse_embedding_list, dense_value_list = input_from_feature_columns(X, self.dnn_feature_columns, self.feature_index, self.embedding_dict)
 
         dnn_input = combined_dnn_input(sparse_embedding_list, dense_value_list)  # [btz, sparse_feat_cnt*emb_size+dense_feat_cnt]
         dnn_output = self.dnn(dnn_input)
@@ -252,11 +222,11 @@ class NeuralCF(RecBase):
         assert X.shape[1] == 2, 'NeuralCF accept (user, item) pair inputs'
 
         # MF部分
-        sparse_embedding_list, _ = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
+        sparse_embedding_list, _ = input_from_feature_columns(X, self.dnn_feature_columns, self.feature_index, self.embedding_dict)
         mf_vec = torch.mul(sparse_embedding_list[0], sparse_embedding_list[1]).squeeze(1)
 
         # DNN部分
-        sparse_embedding_list, _ = self.input_from_feature_columns(X, self.dnn_feature_columns, self.dnn_embedding_dict)
+        sparse_embedding_list, _ = input_from_feature_columns(X, self.dnn_feature_columns, self.feature_index, self.dnn_embedding_dict)
         dnn_input = combined_dnn_input(sparse_embedding_list, [])  # [btz, sparse_feat_cnt*emb_size]
         dnn_vec = self.dnn(dnn_input)
         
@@ -292,7 +262,7 @@ class DeepFM(RecBase):
 
     def forward(self, X):
         # 离散变量过embedding，连续变量保留原值
-        sparse_embedding_list, dense_value_list = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
+        sparse_embedding_list, dense_value_list = input_from_feature_columns(X, self.dnn_feature_columns, self.feature_index, self.embedding_dict)
         logit = self.linear_model(X)  # [btz, out_dim]
 
         if self.use_fm and len(sparse_embedding_list) > 0:
@@ -332,7 +302,7 @@ class WideDeep(RecBase):
 
     def forward(self, X):
         # SparseFeat和VarLenSparseFeat生成Embedding，VarLenSparseFeat要过Pooling, DenseFeat直接从X中取用
-        sparse_embedding_list, dense_value_list = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
+        sparse_embedding_list, dense_value_list = input_from_feature_columns(X, self.dnn_feature_columns, self.feature_index, self.embedding_dict)
         logit = self.linear_model(X)  # [btz, 1]
 
         if hasattr(self, 'dnn') and hasattr(self, 'dnn_linear'):
@@ -375,7 +345,7 @@ class DeepCross(WideDeep):
         self.add_regularization_weight(self.crossnet.kernels, l2=l2_reg_cross)
 
     def forward(self, X):
-        sparse_embedding_list, dense_value_list = self.input_from_feature_columns(X, self.dnn_feature_columns, self.embedding_dict)
+        sparse_embedding_list, dense_value_list = input_from_feature_columns(X, self.dnn_feature_columns, self.feature_index, self.embedding_dict)
 
         # 线性部分，默认不使用
         logit = self.linear_model(X) if hasattr(self, 'linear_model') else 0 # [btz, 1]

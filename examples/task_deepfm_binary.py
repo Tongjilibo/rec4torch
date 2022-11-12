@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 from torch import nn, optim
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import LabelEncoder
-from rec4torch.inputs import DenseFeat, SparseFeat, VarLenSparseFeat, build_input_array, TensorDataset
+from rec4torch.inputs import DenseFeat, SparseFeat, VarLenSparseFeat, build_input_array, collate_fn_device
 from rec4torch.models import DeepFM
 from rec4torch.snippets import sequence_padding, seed_everything, Evaluator
 from sklearn.metrics import roc_auc_score
@@ -48,13 +48,13 @@ def get_data():
     
     # 生成训练样本
     train_X, train_y = build_input_array(data, linear_feature_columns+dnn_feature_columns, target=['rating'])
-    train_X = torch.tensor(train_X)
-    train_y = torch.tensor(train_y)
+    train_X = torch.tensor(train_X, dtype=torch.float)
+    train_y = torch.tensor(train_y, dtype=torch.float)
     return train_X, train_y, linear_feature_columns, dnn_feature_columns
 
 # 加载数据集
 train_X, train_y, linear_feature_columns, dnn_feature_columns = get_data()
-train_dataloader = DataLoader(TensorDataset(train_X, train_y, dtype=torch.float, device=device), batch_size=batch_size, shuffle=True) 
+train_dataloader = DataLoader(TensorDataset(train_X, train_y), batch_size=batch_size, shuffle=True, collate_fn=collate_fn_device(device=device)) 
 
 # 模型定义
 model = DeepFM(linear_feature_columns, dnn_feature_columns)

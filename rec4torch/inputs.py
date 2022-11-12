@@ -224,18 +224,68 @@ def maxlen_lookup(X, feature_index, col_name, padding=0):
     return torch.sum(max_len.long(), dim=-1, keepdim=True)  # [btz, 1]
 
 
+def split_columns(feature_columns, select_columns=('sparse', 'dense', 'var_sparse')):
+    """区分各类特征，因为使用比较多，所以提取出来
+    """
+    select_columns = [select_columns] if isinstance(select_columns, str) else select_columns
+    columns_map = {'sparse': SparseFeat, 'var_sparse': VarLenSparseFeat, 'dense': DenseFeat}
+
+    res = []
+    for col in select_columns:
+        if isinstance(col, str):
+            assert col in columns_map, 'select_columns args illegal'
+            col_type = columns_map[col]
+        elif isinstance(col, (tuple, list)):
+             col_type = tuple([columns_map[item] for item in col])
+        else:
+            raise ValueError('select_columns args illegal')
+
+        res.append(list(filter(lambda x: isinstance(x, col_type), feature_columns)) if len(feature_columns) else [])
+    
+    return res[0] if len(res) == 1 else res
+
+
+def input_from_feature_columns(X, feature_columns, feature_index, embedding_dict, support_dense=True):
+    """SparseFeat和VarLenSparseFeat生成Embedding，VarLenSparseFeat要过Pooling, DenseFeat直接从X中取用
+    """
+    sparse_feature_columns, dense_feature_columns, varlen_sparse_feature_columns = split_columns(feature_columns)
+
+    if not support_dense and len(dense_feature_columns) > 0:
+        raise ValueError("DenseFeat is not supported in dnn_feature_columns")
+
+    # 离散特征过embedding, [(btz,1,out_dim), (btz,1,out_dim), ...]
+    sparse_embedding_list = [embedding_dict[feat.embedding_name](
+        X[:, feature_index[feat.name][0]:feature_index[feat.name][1]].long()) for feat in sparse_feature_columns]
+
+    # 序列离散特征过embedding, {feat_name: (btz, seq_len, out_dim)}
+    # 过pooling  [(btz,1,out_dim), (btz,1,out_dim), ...]
+    sequence_embed_dict = embedding_lookup(X, embedding_dict, feature_index, varlen_sparse_feature_columns, return_dict=True)
+    varlen_sparse_embedding_list = get_varlen_pooling_list(sequence_embed_dict, X, feature_index, varlen_sparse_feature_columns)
+    
+    # 连续特征直接保留 [(btz, dense_len), (btz, dense_len)]
+    dense_value_list = [X[:, feature_index[feat.name][0]:feature_index[feat.name][1]] for feat in dense_feature_columns]
+
+    return sparse_embedding_list + varlen_sparse_embedding_list, dense_value_list
+
+
 class TensorDataset(torch.utils.data.TensorDataset):
     '''继承官方的TensorDataset, 添加指定tensor类型和device功能，防止全部数据放到gpu显存过大
     '''
-    def __init__(self, *tensors: torch.Tensor, dtype=None, device=None) -> None:
+    def __init__(self, *tensors: torch.Tensor, device=None) -> None:
         super().__init__(*tensors)
-        self.dtype = dtype
         self.device = device
     
     def __getitem__(self, index):
         batch = tuple(tensor[index] for tensor in self.tensors)
-        if self.dtype:
-            batch = tuple(tensor.type(self.dtype) for tensor in batch)
         if self.device:
             batch = tuple(tensor.to(self.device) for tensor in batch)
         return batch
+
+
+def collate_fn_device(device):
+    '''如果使用自定义TensorDataset，to(device)太耗时，因此可使用collate_fn_device来把tensor转移到device上
+    '''
+    def collate_fn(batch):
+        X, y = map(list, zip(*batch))
+        return torch.stack(X, dim=0).to(device), torch.stack(y, dim=0).to(device)
+    return collate_fn
