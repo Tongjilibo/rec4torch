@@ -6,7 +6,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import LabelEncoder
 from rec4torch.inputs import DenseFeat, SparseFeat, VarLenSparseFeat, build_input_array, collate_fn_device
 from rec4torch.models import DeepFM
-from rec4torch.snippets import sequence_padding, seed_everything, Evaluator
+from rec4torch.snippets import sequence_padding, seed_everything
+from rec4torch.callbacks import Evaluator
 from sklearn.metrics import roc_auc_score
 
 batch_size = 16
