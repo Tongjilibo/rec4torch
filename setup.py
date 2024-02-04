@@ -7,7 +7,7 @@ with open("README.md", "r", encoding='utf-8') as fh:
 
 setup(
     name='rec4torch',
-    version='0.0.1',
+    version='0.0.2',
     description='an elegant rec4torch',
     long_description=long_description,
     long_description_content_type="text/markdown",
